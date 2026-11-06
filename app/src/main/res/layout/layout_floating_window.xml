@@ -37,10 +37,9 @@
             android:layout_height="32dp"
             android:layout_alignParentEnd="true"
             android:layout_centerVertical="true"
-            android:background="?attr/selectableItemBackgroundBorderless"
+            android:background="@null"
             android:padding="6dp"
-            android:src="@drawable/ic_close"
-            app:tint="@color/text_white" />
+            android:src="@drawable/ic_close" />
     </RelativeLayout>
 
     <!-- Content Container -->
@@ -166,8 +165,7 @@
                 android:id="@+id/ivExpandCollapseArrow"
                 android:layout_width="20dp"
                 android:layout_height="20dp"
-                android:src="@drawable/ic_arrow_up"
-                app:tint="@color/text_white" />
+                android:src="@drawable/ic_arrow_up" />
         </LinearLayout>
 
         <!-- Voucher List (RecyclerView) -->
@@ -178,7 +176,7 @@
             android:layout_marginBottom="10dp"
             android:overScrollMode="never" />
 
-        <!-- Quick Add Voucher Input (Optional custom voucher input) -->
+        <!-- Quick Add Voucher Input -->
         <LinearLayout
             android:id="@+id/llAddVoucherBox"
             android:layout_width="match_parent"
@@ -229,8 +227,7 @@
                 android:layout_height="20dp"
                 android:layout_alignParentStart="true"
                 android:layout_centerVertical="true"
-                android:src="@drawable/ic_tag"
-                app:tint="@color/text_secondary" />
+                android:src="@drawable/ic_tag" />
 
             <TextView
                 android:layout_width="wrap_content"
@@ -248,9 +245,7 @@
                 android:layout_height="wrap_content"
                 android:layout_alignParentEnd="true"
                 android:layout_centerVertical="true"
-                android:checked="false"
-                app:thumbTint="@color/text_white"
-                app:trackTint="@color/border_subtle" />
+                android:checked="false" />
         </RelativeLayout>
 
         <!-- ================= TOGGLE 2: TỰ ĐẶT HÀNG SAU KHI ÁP VOUCHER ================= -->
@@ -265,8 +260,7 @@
                 android:layout_height="20dp"
                 android:layout_alignParentStart="true"
                 android:layout_centerVertical="true"
-                android:src="@drawable/ic_cart"
-                app:tint="@color/text_secondary" />
+                android:src="@drawable/ic_cart" />
 
             <TextView
                 android:layout_width="wrap_content"
@@ -284,9 +278,7 @@
                 android:layout_height="wrap_content"
                 android:layout_alignParentEnd="true"
                 android:layout_centerVertical="true"
-                android:checked="true"
-                app:thumbTint="@color/text_white"
-                app:trackTint="@color/primary_orange" />
+                android:checked="true" />
         </RelativeLayout>
 
         <!-- ================= TOGGLE 3: SĂN THEO MỐC THỜI GIAN ================= -->
@@ -301,8 +293,7 @@
                 android:layout_height="20dp"
                 android:layout_alignParentStart="true"
                 android:layout_centerVertical="true"
-                android:src="@drawable/ic_clock"
-                app:tint="@color/text_secondary" />
+                android:src="@drawable/ic_clock" />
 
             <TextView
                 android:layout_width="wrap_content"
@@ -320,9 +311,7 @@
                 android:layout_height="wrap_content"
                 android:layout_alignParentEnd="true"
                 android:layout_centerVertical="true"
-                android:checked="true"
-                app:thumbTint="@color/text_white"
-                app:trackTint="@color/primary_orange" />
+                android:checked="true" />
         </RelativeLayout>
 
         <!-- ================= TIME INPUTS (H:M:S) ================= -->
@@ -408,7 +397,6 @@
             android:layout_marginBottom="12dp"
             android:orientation="horizontal">
 
-            <!-- Button Bắt đầu -->
             <LinearLayout
                 android:id="@+id/btnStart"
                 android:layout_width="0dp"
@@ -426,8 +414,7 @@
                     android:layout_width="18dp"
                     android:layout_height="18dp"
                     android:layout_marginEnd="6dp"
-                    android:src="@drawable/ic_play"
-                    app:tint="@color/text_white" />
+                    android:src="@drawable/ic_play" />
 
                 <TextView
                     android:id="@+id/tvStartText"
@@ -439,7 +426,6 @@
                     android:textStyle="bold" />
             </LinearLayout>
 
-            <!-- Button Dừng -->
             <LinearLayout
                 android:id="@+id/btnStop"
                 android:layout_width="0dp"
@@ -456,8 +442,7 @@
                     android:layout_width="16dp"
                     android:layout_height="16dp"
                     android:layout_marginEnd="6dp"
-                    android:src="@drawable/ic_stop"
-                    app:tint="@color/btn_stop_text" />
+                    android:src="@drawable/ic_stop" />
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -487,19 +472,16 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content">
 
-            <!-- Collapse / Minimize arrow -->
             <ImageView
                 android:id="@+id/btnMinimize"
                 android:layout_width="28dp"
                 android:layout_height="28dp"
                 android:layout_alignParentStart="true"
                 android:layout_centerVertical="true"
-                android:background="?attr/selectableItemBackgroundBorderless"
+                android:background="@null"
                 android:padding="4dp"
-                android:src="@drawable/ic_arrow_up"
-                app:tint="@color/text_white" />
+                android:src="@drawable/ic_arrow_up" />
 
-            <!-- Precision Realtime Clock (e.g. 22:11:43.3) -->
             <TextView
                 android:id="@+id/tvRealtimeClock"
                 android:layout_width="wrap_content"
@@ -513,7 +495,6 @@
                 android:textStyle="bold" />
         </RelativeLayout>
 
-        <!-- Service status indicator: "● Service đã kết nối" -->
         <LinearLayout
             android:id="@+id/llServiceStatus"
             android:layout_width="wrap_content"

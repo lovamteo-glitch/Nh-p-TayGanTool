@@ -210,7 +210,8 @@ class FloatingWindowService : Service() {
         }
 
         try {
-            val inflater = LayoutInflater.from(this)
+            val themedContext = androidx.appcompat.view.ContextThemeWrapper(this, R.style.Theme_TayGanTool)
+            val inflater = LayoutInflater.from(themedContext)
             expandedView = inflater.inflate(R.layout.layout_floating_window, null)
             minimizedBubbleView = inflater.inflate(R.layout.layout_floating_bubble, null)
 
