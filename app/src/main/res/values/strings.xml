@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Tay Gân Tool</string>
+    <string name="accessibility_service_desc">Tay Gân Tool sử dụng quyền này để tự động tìm và click mã giảm giá, tự động bấm đặt hàng khi đến mốc thời gian bạn đã cài đặt.</string>
+    <string name="tab_hunt_code">Săn mã</string>
+    <string name="tab_deal_svip">Deal SVIP</string>
+    <string name="voucher_section_title">Voucher cần săn</string>
+    <string name="opt_hunt_percent">Săn theo % voucher</string>
+    <string name="opt_auto_order">Tự đặt hàng sau khi áp voucher</string>
+    <string name="opt_hunt_by_time">Săn theo mốc thời gian</string>
+    <string name="btn_start">Bắt đầu</string>
+    <string name="btn_stop">Dừng</string>
+    <string name="service_connected">Service đã kết nối</string>
+    <string name="service_disconnected">Service chưa kết nối (Chạm để bật)</string>
+    <string name="overlay_permission_desc">Cần cấp quyền Hiển thị trên ứng dụng khác để mở bảng điều khiển nổi.</string>
+    <string name="accessibility_permission_desc">Cần bật Dịch vụ hỗ trợ tiếp cận (Accessibility) để tự động click voucher và đặt hàng.</string>
+</resources>

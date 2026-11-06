@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_main">#181920</color>
+    <color name="bg_card">#22242C</color>
+    <color name="bg_card_selected">#2D303B</color>
+    <color name="bg_tab_inactive">#252732</color>
+    <color name="bg_input">#2A2C38</color>
+    
+    <color name="primary_orange">#FF5722</color>
+    <color name="primary_orange_dark">#E64A19</color>
+    <color name="primary_orange_light">#FF8A65</color>
+    
+    <color name="btn_stop_bg">#2E303B</color>
+    <color name="btn_stop_text">#A0A5B5</color>
+    
+    <color name="text_white">#FFFFFF</color>
+    <color name="text_secondary">#9E9EB0</color>
+    <color name="text_muted">#6C7082</color>
+    
+    <!-- Badges -->
+    <color name="badge_vip_bg">#3E2D17</color>
+    <color name="badge_vip_border">#FFA000</color>
+    <color name="badge_vip_text">#FFC107</color>
+    
+    <color name="badge_ig">#E1306C</color>
+    <color name="badge_fb">#1877F2</color>
+    
+    <!-- Status -->
+    <color name="status_connected">#00E676</color>
+    <color name="status_disconnected">#FF5252</color>
+    
+    <!-- Divider / Border -->
+    <color name="border_subtle">#333745</color>
+</resources>
