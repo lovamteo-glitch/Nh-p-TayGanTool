@@ -118,7 +118,7 @@ class MainActivity : AppCompatActivity() {
 
         btnToggleFloatingWindow.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                Toast.makeText(this, "Vui lòng cấp quyền Cửa sổ nổi trước!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Vui lòng cấp quyền Hiển thị trên ứng dụng khác!", Toast.LENGTH_LONG).show()
                 val intent = Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     Uri.parse("package:$packageName")
@@ -127,13 +127,22 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
-            // Start Floating Service
+            // Start Floating Service an toàn không crash
             val intent = Intent(this, FloatingWindowService::class.java)
-            ContextCompat.startForegroundService(this, intent)
-            Toast.makeText(this, "Đã mở bảng điều khiển nổi!", Toast.LENGTH_SHORT).show()
-
-            // Minimize MainActivity so user sees floating panel
-            moveTaskToBack(true)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+                Toast.makeText(this, "Đã mở bảng điều khiển nổi thành công!", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                try {
+                    startService(intent)
+                } catch (err: Exception) {
+                    Toast.makeText(this, "Lỗi khởi động service: ${err.message}", Toast.LENGTH_LONG).show()
+                }
+            }
         }
 
         btnStopAllServices.setOnClickListener {

@@ -8,10 +8,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -24,6 +26,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -46,6 +49,7 @@ import kotlinx.coroutines.launch
 
 class FloatingWindowService : Service() {
 
+    private val tag = "FloatingWindowService"
     private lateinit var windowManager: WindowManager
     private var expandedView: View? = null
     private var minimizedBubbleView: View? = null
@@ -63,6 +67,9 @@ class FloatingWindowService : Service() {
 
     private lateinit var voucherAdapter: VoucherAdapter
     private var currentVouchers: MutableList<VoucherItem> = mutableListOf()
+
+    private var expandedParams: WindowManager.LayoutParams? = null
+    private var bubbleParams: WindowManager.LayoutParams? = null
 
     private var initialX = 0
     private var initialY = 0
@@ -85,9 +92,27 @@ class FloatingWindowService : Service() {
         apiService = ShopeeApiService(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        startForegroundServiceNotification()
+        // Safe Foreground notification start (Bọc an toàn chống crash trên Android 14)
+        startForegroundSafely()
+
+        // Khởi tạo Views
         initViews()
+
+        // Bắt đầu đồng hồ mili-giây
         startRealtimeClock()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (expandedView == null) {
+            initViews()
+        } else if (expandedView?.isAttachedToWindow == false && !isMinimized) {
+            try {
+                expandedParams?.let { windowManager.addView(expandedView, it) }
+            } catch (e: Throwable) {
+                Log.e(tag, "Error re-attaching window: ${e.message}")
+            }
+        }
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -98,39 +123,59 @@ class FloatingWindowService : Service() {
         removeViews()
     }
 
-    private fun startForegroundServiceNotification() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Tay Gân Tool Overlay",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Hiển thị bảng điều khiển nổi để săn sale"
+    private fun startForegroundSafely() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "Tay Gân Tool Overlay",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Bảng điều khiển nổi săn sale Shopee"
+                }
+                val manager = getSystemService(NotificationManager::class.java)
+                manager?.createNotificationChannel(channel)
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
+
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Tay Gân Tool đang chạy")
+                .setContentText("Bảng điều khiển nổi sẵn sàng")
+                .setSmallIcon(R.drawable.ic_launcher_app)
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { // Android 14+
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Throwable) {
+            Log.e(tag, "startForegroundSafely warning (non-fatal): ${e.message}")
         }
-
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Tay Gân Tool đang hoạt động")
-            .setContentText("Bảng điều khiển nổi & Lưu mã API Shopee đang mở")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .build()
-
-        startForeground(NOTIFICATION_ID, notification)
     }
 
     @SuppressLint("ClickableViewAccessibility", "InflateParams")
     private fun initViews() {
+        // Kiểm tra quyền Cửa sổ nổi
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Chưa cấp quyền Hiển thị trên ứng dụng khác!", Toast.LENGTH_LONG).show()
+            return
+        }
+
         val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
@@ -138,23 +183,25 @@ class FloatingWindowService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        val expandedParams = WindowManager.LayoutParams(
+        // Layout params cho Cửa sổ mở rộng
+        expandedParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.END
-            x = 30
-            y = 150
+            x = 20
+            y = 120
         }
 
-        val bubbleParams = WindowManager.LayoutParams(
+        // Layout params cho Bong bóng nổi thu nhỏ
+        bubbleParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
@@ -162,51 +209,62 @@ class FloatingWindowService : Service() {
             y = 120
         }
 
-        val inflater = LayoutInflater.from(this)
-        expandedView = inflater.inflate(R.layout.layout_floating_window, null)
-        minimizedBubbleView = inflater.inflate(R.layout.layout_floating_bubble, null)
+        try {
+            val inflater = LayoutInflater.from(this)
+            expandedView = inflater.inflate(R.layout.layout_floating_window, null)
+            minimizedBubbleView = inflater.inflate(R.layout.layout_floating_bubble, null)
 
-        setupExpandedViewLogic(expandedParams)
-        setupBubbleViewLogic(bubbleParams)
+            setupExpandedViewLogic()
+            setupBubbleViewLogic()
 
-        windowManager.addView(expandedView, expandedParams)
+            // Thêm View vào WindowManager
+            if (expandedView?.isAttachedToWindow == false) {
+                windowManager.addView(expandedView, expandedParams)
+            }
+        } catch (e: Throwable) {
+            Log.e(tag, "Fatal error adding floating view: ${e.message}", e)
+            Toast.makeText(this, "Lỗi mở cửa sổ nổi: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun setupExpandedViewLogic(params: WindowManager.LayoutParams) {
+    private fun setupExpandedViewLogic() {
         val root = expandedView ?: return
+        val params = expandedParams ?: return
 
         val headerBar = root.findViewById<View>(R.id.headerBar)
-        headerBar.setOnTouchListener { _, event ->
+        headerBar?.setOnTouchListener { _, event ->
             handleTouchDrag(event, params, expandedView)
         }
 
-        root.findViewById<View>(R.id.btnCloseWindow).setOnClickListener {
+        root.findViewById<View>(R.id.btnCloseWindow)?.setOnClickListener {
             stopSelf()
         }
 
-        root.findViewById<View>(R.id.btnMinimize).setOnClickListener {
+        root.findViewById<View>(R.id.btnMinimize)?.setOnClickListener {
             minimizeToBubble()
         }
 
+        // Tabs
         val tabHuntCode = root.findViewById<TextView>(R.id.tabHuntCode)
         val tabDealSvip = root.findViewById<TextView>(R.id.tabDealSvip)
-        tabHuntCode.setOnClickListener {
+        tabHuntCode?.setOnClickListener {
             tabHuntCode.setBackgroundResource(R.drawable.bg_tab_active)
             tabHuntCode.setTextColor(ContextCompat.getColor(this, R.color.text_white))
-            tabDealSvip.setBackgroundResource(R.drawable.bg_tab_inactive)
-            tabDealSvip.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+            tabDealSvip?.setBackgroundResource(R.drawable.bg_tab_inactive)
+            tabDealSvip?.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
             prefManager.activeTab = 0
         }
-        tabDealSvip.setOnClickListener {
+        tabDealSvip?.setOnClickListener {
             tabDealSvip.setBackgroundResource(R.drawable.bg_tab_active)
             tabDealSvip.setTextColor(ContextCompat.getColor(this, R.color.text_white))
-            tabHuntCode.setBackgroundResource(R.drawable.bg_tab_inactive)
-            tabHuntCode.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+            tabHuntCode?.setBackgroundResource(R.drawable.bg_tab_inactive)
+            tabHuntCode?.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
             prefManager.activeTab = 1
-            Toast.makeText(this, "Đã chuyển sang tab Deal SVIP (API Hunter)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Đã bật chế độ Săn Deal SVIP (API)", Toast.LENGTH_SHORT).show()
         }
 
+        // Selected Voucher Preview Dropdown
         val previewRoot = root.findViewById<View>(R.id.llSelectedVoucherPreview)
         val tvPreviewBadge = root.findViewById<TextView>(R.id.tvPreviewBadge)
         val tvPreviewTitle = root.findViewById<TextView>(R.id.tvPreviewTitle)
@@ -214,94 +272,118 @@ class FloatingWindowService : Service() {
         val rvVouchers = root.findViewById<RecyclerView>(R.id.rvVouchers)
 
         currentVouchers = prefManager.getVouchers()
-        root.findViewById<TextView>(R.id.tvVoucherCountBadge).text = "${currentVouchers.size} mã"
+        root.findViewById<TextView>(R.id.tvVoucherCountBadge)?.text = "${currentVouchers.size} mã"
 
         voucherAdapter = VoucherAdapter(currentVouchers) { selectedItem ->
-            tvPreviewTitle.text = selectedItem.code
-            tvPreviewBadge.text = if (selectedItem.isApiClaimable) "API" else if (selectedItem.badgeType == BadgeType.VIP) "VIP" else "SALE"
+            tvPreviewTitle?.text = selectedItem.code
+            tvPreviewBadge?.text = if (selectedItem.isApiClaimable) "API" else if (selectedItem.badgeType == BadgeType.VIP) "VIP" else "SALE"
             prefManager.saveVouchers(currentVouchers)
         }
 
         val initialSelected = voucherAdapter.getSelectedItem()
         if (initialSelected != null) {
-            tvPreviewTitle.text = initialSelected.code
-            tvPreviewBadge.text = if (initialSelected.isApiClaimable) "API" else "VIP"
+            tvPreviewTitle?.text = initialSelected.code
+            tvPreviewBadge?.text = if (initialSelected.isApiClaimable) "API" else "VIP"
         }
 
-        rvVouchers.layoutManager = LinearLayoutManager(this)
-        rvVouchers.adapter = voucherAdapter
+        rvVouchers?.layoutManager = LinearLayoutManager(this)
+        rvVouchers?.adapter = voucherAdapter
 
-        previewRoot.setOnClickListener {
-            if (rvVouchers.visibility == View.VISIBLE) {
+        previewRoot?.setOnClickListener {
+            if (rvVouchers?.visibility == View.VISIBLE) {
                 rvVouchers.visibility = View.GONE
-                ivArrow.setImageResource(R.drawable.ic_arrow_down)
+                ivArrow?.setImageResource(R.drawable.ic_arrow_down)
             } else {
-                rvVouchers.visibility = View.VISIBLE
-                ivArrow.setImageResource(R.drawable.ic_arrow_up)
+                rvVouchers?.visibility = View.VISIBLE
+                ivArrow?.setImageResource(R.drawable.ic_arrow_up)
             }
         }
 
+        // Switches
         val switchHuntByPercent = root.findViewById<SwitchCompat>(R.id.switchHuntByPercent)
         val switchAutoOrder = root.findViewById<SwitchCompat>(R.id.switchAutoOrder)
         val switchHuntByTime = root.findViewById<SwitchCompat>(R.id.switchHuntByTime)
         val timeContainer = root.findViewById<View>(R.id.llTimeInputsContainer)
 
-        switchHuntByPercent.isChecked = prefManager.huntByPercent
-        switchAutoOrder.isChecked = prefManager.autoOrder
-        switchHuntByTime.isChecked = prefManager.huntByTime
+        switchHuntByPercent?.isChecked = prefManager.huntByPercent
+        switchAutoOrder?.isChecked = prefManager.autoOrder
+        switchHuntByTime?.isChecked = prefManager.huntByTime
 
-        switchHuntByPercent.setOnCheckedChangeListener { _, isChecked ->
+        switchHuntByPercent?.setOnCheckedChangeListener { _, isChecked ->
             prefManager.huntByPercent = isChecked
         }
-        switchAutoOrder.setOnCheckedChangeListener { _, isChecked ->
+        switchAutoOrder?.setOnCheckedChangeListener { _, isChecked ->
             prefManager.autoOrder = isChecked
         }
-        switchHuntByTime.setOnCheckedChangeListener { _, isChecked ->
+        switchHuntByTime?.setOnCheckedChangeListener { _, isChecked ->
             prefManager.huntByTime = isChecked
-            timeContainer.alpha = if (isChecked) 1.0f else 0.4f
+            timeContainer?.alpha = if (isChecked) 1.0f else 0.4f
         }
 
+        // Time inputs
         val etHour = root.findViewById<EditText>(R.id.etTargetHour)
         val etMinute = root.findViewById<EditText>(R.id.etTargetMinute)
         val etSecond = root.findViewById<EditText>(R.id.etTargetSecond)
 
-        etHour.setText(String.format("%02d", prefManager.targetHour))
-        etMinute.setText(String.format("%02d", prefManager.targetMinute))
-        etSecond.setText(String.format("%02d", prefManager.targetSecond))
+        etHour?.setText(String.format("%02d", prefManager.targetHour))
+        etMinute?.setText(String.format("%02d", prefManager.targetMinute))
+        etSecond?.setText(String.format("%02d", prefManager.targetSecond))
 
+        // Focus handler để mở bàn phím khi bấm vào ô nhập giờ
+        setupKeyboardFocus(etHour, params)
+        setupKeyboardFocus(etMinute, params)
+        setupKeyboardFocus(etSecond, params)
+
+        // Action Buttons
         val btnStart = root.findViewById<View>(R.id.btnStart)
         val tvStartText = root.findViewById<TextView>(R.id.tvStartText)
         val btnStop = root.findViewById<View>(R.id.btnStop)
 
-        btnStart.setOnClickListener {
-            val h = etHour.text.toString().toIntOrNull() ?: prefManager.targetHour
-            val m = etMinute.text.toString().toIntOrNull() ?: prefManager.targetMinute
-            val s = etSecond.text.toString().toIntOrNull() ?: prefManager.targetSecond
+        btnStart?.setOnClickListener {
+            val h = etHour?.text?.toString()?.toIntOrNull() ?: prefManager.targetHour
+            val m = etMinute?.text?.toString()?.toIntOrNull() ?: prefManager.targetMinute
+            val s = etSecond?.text?.toString()?.toIntOrNull() ?: prefManager.targetSecond
             prefManager.targetHour = h
             prefManager.targetMinute = m
             prefManager.targetSecond = s
 
-            startHunting(tvStartText)
+            tvStartText?.let { startHunting(it) }
         }
 
-        btnStop.setOnClickListener {
-            stopHunting(tvStartText)
+        btnStop?.setOnClickListener {
+            tvStartText?.let { stopHunting(it) }
         }
 
-        root.findViewById<View>(R.id.llServiceStatus).setOnClickListener {
+        root.findViewById<View>(R.id.llServiceStatus)?.setOnClickListener {
             if (!TayGanAccessibilityService.isConnected()) {
                 val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
                 startActivity(intent)
-                Toast.makeText(this, "Vui lòng tìm và BẬT 'Tay Gân Tool' trong Trợ năng", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Vui lòng chạm vào 'Tay Gân Tool' và BẬT công tắc!", Toast.LENGTH_LONG).show()
             }
         }
     }
 
+    private fun setupKeyboardFocus(editText: EditText?, params: WindowManager.LayoutParams) {
+        editText?.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) {
+                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            } else {
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            }
+            try {
+                if (expandedView?.isAttachedToWindow == true) {
+                    windowManager.updateViewLayout(expandedView, params)
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
     @SuppressLint("ClickableViewAccessibility")
-    private fun setupBubbleViewLogic(params: WindowManager.LayoutParams) {
+    private fun setupBubbleViewLogic() {
         val bubble = minimizedBubbleView ?: return
+        val params = bubbleParams ?: return
 
         bubble.setOnTouchListener { _, event ->
             handleTouchDrag(event, params, minimizedBubbleView)
@@ -326,14 +408,16 @@ class FloatingWindowService : Service() {
                 params.x = initialX - (event.rawX - initialTouchX).toInt()
                 params.y = initialY + (event.rawY - initialTouchY).toInt()
                 try {
-                    windowManager.updateViewLayout(targetView, params)
+                    if (targetView.isAttachedToWindow) {
+                        windowManager.updateViewLayout(targetView, params)
+                    }
                 } catch (_: Exception) {}
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 val diffX = Math.abs(event.rawX - initialTouchX)
                 val diffY = Math.abs(event.rawY - initialTouchY)
-                if (diffX < 10 && diffY < 10) {
+                if (diffX < 12 && diffY < 12) {
                     targetView.performClick()
                 }
                 return true
@@ -346,63 +430,35 @@ class FloatingWindowService : Service() {
         if (isMinimized) return
         isMinimized = true
         try {
-            windowManager.removeView(expandedView)
-        } catch (_: Exception) {}
-
-        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
+            if (expandedView?.isAttachedToWindow == true) {
+                windowManager.removeView(expandedView)
+            }
+            if (minimizedBubbleView?.isAttachedToWindow == false) {
+                bubbleParams?.let { windowManager.addView(minimizedBubbleView, it) }
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Error minimizing: ${e.message}")
         }
-
-        val bubbleParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            layoutType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            x = 0
-            y = 120
-        }
-
-        windowManager.addView(minimizedBubbleView, bubbleParams)
     }
 
     private fun expandToWindow() {
         if (!isMinimized) return
         isMinimized = false
         try {
-            windowManager.removeView(minimizedBubbleView)
-        } catch (_: Exception) {}
-
-        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
+            if (minimizedBubbleView?.isAttachedToWindow == true) {
+                windowManager.removeView(minimizedBubbleView)
+            }
+            if (expandedView?.isAttachedToWindow == false) {
+                expandedParams?.let { windowManager.addView(expandedView, it) }
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Error expanding: ${e.message}")
         }
-
-        val expandedParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            layoutType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = 30
-            y = 150
-        }
-
-        windowManager.addView(expandedView, expandedParams)
     }
 
     private fun startHunting(tvStartText: TextView) {
         if (!TayGanAccessibilityService.isConnected()) {
-            Toast.makeText(this, "Cảnh báo: Dịch vụ Trợ năng chưa bật!", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Lưu ý: Dịch vụ Trợ năng chưa bật!", Toast.LENGTH_LONG).show()
         }
 
         val selectedVoucher = voucherAdapter.getSelectedItem() ?: return
@@ -414,7 +470,6 @@ class FloatingWindowService : Service() {
 
         val triggerCombo = {
             serviceScope.launch {
-                // Bước 1: Nếu voucher có chữ ký API và đã kết nối Shopee, bắn API lưu mã ngầm trước!
                 if (selectedVoucher.isApiClaimable && sessionManager.isLoggedIn) {
                     tvStartText.text = "Lưu API..."
                     val apiResult = apiService.saveVoucherDirect(selectedVoucher)
@@ -423,7 +478,7 @@ class FloatingWindowService : Service() {
                             Toast.makeText(this@FloatingWindowService, "API: ${apiResult.message}", Toast.LENGTH_SHORT).show()
                         }
                         is SaveApiResult.Retry -> {
-                            Toast.makeText(this@FloatingWindowService, "API Retry: ${apiResult.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@FloatingWindowService, "API: ${apiResult.message}", Toast.LENGTH_SHORT).show()
                         }
                         is SaveApiResult.Failed -> {
                             Toast.makeText(this@FloatingWindowService, "API: ${apiResult.message}", Toast.LENGTH_SHORT).show()
@@ -431,7 +486,6 @@ class FloatingWindowService : Service() {
                     }
                 }
 
-                // Bước 2: Tự động kích hoạt Accessibility Service điền mã & chốt đơn đặt hàng
                 TayGanAccessibilityService.instance?.triggerHunting(selectedVoucher.code, autoOrder)
                 tvStartText.text = "Đã bắn mã!"
             }
@@ -439,7 +493,7 @@ class FloatingWindowService : Service() {
 
         if (!huntByTime) {
             triggerCombo()
-            Toast.makeText(this, "Đã kích hoạt săn ngay lập tức!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Đã kích hoạt săn tức thì!", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -451,7 +505,7 @@ class FloatingWindowService : Service() {
 
         Toast.makeText(
             this,
-            "Đã đặt lịch săn lúc ${prefManager.targetHour}:${prefManager.targetMinute}:${prefManager.targetSecond}",
+            "Đã hẹn giờ săn: ${prefManager.targetHour}:${prefManager.targetMinute}:${prefManager.targetSecond}",
             Toast.LENGTH_SHORT
         ).show()
 
@@ -487,28 +541,30 @@ class FloatingWindowService : Service() {
         clockJob?.cancel()
         clockJob = serviceScope.launch {
             while (isActive) {
-                val formattedTime = TimeHelper.getCurrentTimeFormatted()
-                val isConnected = TayGanAccessibilityService.isConnected()
+                try {
+                    val formattedTime = TimeHelper.getCurrentTimeFormatted()
+                    val isConnected = TayGanAccessibilityService.isConnected()
 
-                expandedView?.findViewById<TextView>(R.id.tvRealtimeClock)?.text = formattedTime
-                val dot = expandedView?.findViewById<View>(R.id.dotStatus)
-                val statusText = expandedView?.findViewById<TextView>(R.id.tvStatusText)
+                    expandedView?.findViewById<TextView>(R.id.tvRealtimeClock)?.text = formattedTime
+                    val dot = expandedView?.findViewById<View>(R.id.dotStatus)
+                    val statusText = expandedView?.findViewById<TextView>(R.id.tvStatusText)
 
-                if (isConnected) {
-                    dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_connected)
-                    val apiStatus = if (sessionManager.isLoggedIn) " + API Sẵn sàng" else ""
-                    statusText?.text = "Service đã kết nối$apiStatus"
-                } else {
-                    dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_disconnected)
-                    statusText?.text = "Service chưa kết nối (Chạm để bật)"
-                }
+                    if (isConnected) {
+                        dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_connected)
+                        val apiStatus = if (sessionManager.isLoggedIn) " + API Sẵn sàng" else ""
+                        statusText?.text = "Service đã kết nối$apiStatus"
+                    } else {
+                        dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_disconnected)
+                        statusText?.text = "Service chưa kết nối (Chạm để bật)"
+                    }
 
-                minimizedBubbleView?.findViewById<TextView>(R.id.tvBubbleClock)?.text = formattedTime
-                val bubbleDot = minimizedBubbleView?.findViewById<View>(R.id.bubbleStatusDot)
-                bubbleDot?.backgroundTintList = ContextCompat.getColorStateList(
-                    this@FloatingWindowService,
-                    if (isConnected) R.color.status_connected else R.color.status_disconnected
-                )
+                    minimizedBubbleView?.findViewById<TextView>(R.id.tvBubbleClock)?.text = formattedTime
+                    val bubbleDot = minimizedBubbleView?.findViewById<View>(R.id.bubbleStatusDot)
+                    bubbleDot?.backgroundTintList = ContextCompat.getColorStateList(
+                        this@FloatingWindowService,
+                        if (isConnected) R.color.status_connected else R.color.status_disconnected
+                    )
+                } catch (_: Exception) {}
 
                 delay(100)
             }
