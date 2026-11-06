@@ -43,16 +43,20 @@ class TayGanAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var spamJob: Job? = null
 
+    // State machine cho quy trình: Vào voucher -> Quét -> Chưa thấy thì Back ra -> Vào lại -> Thấy mã thì Áp & Đặt hàng
+    private var hasSelectedVoucher = false
+    private var lastActionTime = 0L
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         _serviceStatusFlow.value = true
-        Log.d(TAG, "TayGanAccessibilityService connected with Human Stealth Engine!")
+        Log.d(TAG, "TayGanAccessibilityService connected with Auto-Refresh & Re-enter Engine!")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!isHuntingActive || event == null) return
-        executeHuntStep()
+        executeSmartHuntLoop()
     }
 
     override fun onInterrupt() {
@@ -67,84 +71,257 @@ class TayGanAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Khởi động quá trình săn sale với thuật toán mô phỏng vân tay và độ trễ tự nhiên của người thật
+     * Khởi động quy trình săn sale thông minh
      */
     fun triggerHunting(voucherCode: String, placeOrder: Boolean) {
         targetVoucherCode = voucherCode
         autoPlaceOrder = placeOrder
         isHuntingActive = true
+        hasSelectedVoucher = false
+        lastActionTime = System.currentTimeMillis()
 
         vibrateAlert(120)
-        Log.d(TAG, "Triggering hunting with code: $voucherCode, autoOrder: $placeOrder (Human Stealth Active)")
+        Log.d(TAG, "Triggering hunting: Code=$voucherCode, AutoOrder=$placeOrder")
 
         spamJob?.cancel()
         spamJob = serviceScope.launch {
-            // Chu kỳ quét tối đa 40 nhịp với độ trễ jitter ngẫu nhiên
-            for (i in 0 until 45) {
+            // Chu kỳ săn lặp liên tục mỗi 60ms - 100ms
+            for (step in 0 until 120) { // Chạy bền bỉ trong 8-10 giây quanh mốc mở sale
                 if (!isHuntingActive) break
-                executeHuntStep()
-
-                // Độ trễ ngẫu nhiên sinh học (Human Jitter): 60ms - 95ms thay vì máy móc 50ms cố định
-                val humanJitterDelay = Random.nextLong(60, 95)
-                delay(humanJitterDelay)
+                executeSmartHuntLoop()
+                delay(Random.nextLong(65, 105))
             }
         }
     }
 
     fun stopHunting() {
         isHuntingActive = false
+        hasSelectedVoucher = false
         spamJob?.cancel()
         Log.d(TAG, "Hunting stopped.")
     }
 
-    private fun executeHuntStep() {
+    /**
+     * Vòng lặp săn thông minh (Auto Back & Re-enter):
+     * 1. Xác định đang ở trang nào (Trang Thanh Toán hay Trang Chọn Voucher)
+     * 2. Nếu ở trang Chọn Voucher:
+     *    - Quét tìm đúng mã mục tiêu.
+     *    - Nếu THẤY: Chọn mã -> Bấm "Đồng ý".
+     *    - Nếu CHƯA THẤY: Bấm Back thoát ra ngay lập tức!
+     * 3. Nếu ở trang Thanh Toán:
+     *    - Nếu chưa có mã: Bấm lại vào "Shopee Voucher" để tải lại danh sách mới (Refresh)!
+     *    - Nếu đã chọn xong mã: Bấm "Đặt hàng" chốt đơn!
+     */
+    private fun executeSmartHuntLoop() {
         val rootNode = rootInActiveWindow ?: return
+        val now = System.currentTimeMillis()
 
         try {
-            // 1. Điền mã voucher vào ô nhập (nếu có ô nhập)
-            if (targetVoucherCode.isNotEmpty()) {
-                val inputNodes = findNodesByTextOrHint(rootNode, listOf("nhập mã", "voucher", "mã giảm giá", "coupon"))
-                for (node in inputNodes) {
-                    if (node.isEditable) {
-                        val arguments = Bundle()
-                        arguments.putCharSequence(
-                            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                            targetVoucherCode
-                        )
-                        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-                        Log.d(TAG, "Auto filled voucher code: $targetVoucherCode")
-                        break
+            val isInVoucherSheet = isCurrentlyInVoucherSheet(rootNode)
+            val isInCheckoutPage = isCurrentlyInCheckoutPage(rootNode)
+
+            // ================= TRƯỜNG HỢP 1: ĐANG Ở TRANG CHỌN VOUCHER =================
+            if (isInVoucherSheet) {
+                // Bước 1.1: Quét xem mã cần săn đã xuất hiện trong danh sách chưa
+                val matchedVoucherNode = findMatchingVoucherNode(rootNode, targetVoucherCode)
+
+                if (matchedVoucherNode != null) {
+                    // ĐÃ TÌM THẤY ĐÚNG MÃ!
+                    Log.d(TAG, "Đã tìm thấy đúng voucher mục tiêu: $targetVoucherCode")
+                    performHumanLikeClick(matchedVoucherNode)
+                    hasSelectedVoucher = true
+                    vibrateAlert(80)
+
+                    // Bấm nút "Đồng ý" / "Áp dụng" / "OK" để xác nhận
+                    clickFirstMatchingNode(
+                        rootNode,
+                        listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "XÁC NHẬN", "OK", "Áp dụng", "Áp Dụng")
+                    )
+                    return
+                }
+
+                // Bước 1.2: Nếu có ô nhập mã, tự động điền mã nếu là mã nhập tay
+                if (isAlphanumericCode(targetVoucherCode)) {
+                    val inputFilled = tryFillVoucherEditText(rootNode, targetVoucherCode)
+                    if (inputFilled) {
+                        clickFirstMatchingNode(rootNode, listOf("Áp dụng", "Áp Dụng", "ÁP DỤNG", "Chọn"))
+                        clickFirstMatchingNode(rootNode, listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "OK"))
+                        hasSelectedVoucher = true
+                        return
                     }
                 }
+
+                // Bước 1.3: NẾU CHƯA HIỆN MÃ (Mã chưa nạp/chưa mở):
+                // Đúng như chiến thuật pro: THOÁT RA để không bị kẹt ở danh sách cũ!
+                if (now - lastActionTime > 180) { // Giữ nhịp 180ms tránh spam giật lag
+                    lastActionTime = now
+                    Log.d(TAG, "Chưa thấy mã $targetVoucherCode -> Thực hiện BACK ra ngoài để refresh...")
+                    val clickedBack = clickFirstMatchingNode(rootNode, listOf("Trở lại", "Quay lại", "Close"))
+                    if (!clickedBack) {
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                    }
+                }
+                return
             }
 
-            // 2. Chạm tự nhiên nút "Áp dụng"
-            clickFirstMatchingNode(
-                rootNode,
-                listOf("Áp dụng", "Áp Dụng", "ÁP DỤNG", "Chọn", "Lưu mã", "Dùng ngay")
-            )
-
-            // 3. Chạm tự nhiên nút "Đồng ý" / "Xác nhận"
-            clickFirstMatchingNode(
-                rootNode,
-                listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "XÁC NHẬN", "OK")
-            )
-
-            // 4. Chạm tự nhiên nút "Đặt hàng" / "Thanh toán"
-            if (autoPlaceOrder) {
-                val clickedOrder = clickFirstMatchingNode(
-                    rootNode,
-                    listOf("Đặt hàng", "ĐẶT HÀNG", "Mua hàng", "MUA HÀNG", "Thanh toán", "THANH TOÁN")
-                )
-                if (clickedOrder) {
-                    vibrateAlert(180)
-                    Log.d(TAG, "Successfully triggered Human Touch on Order button!")
+            // ================= TRƯỜNG HỢP 2: ĐANG Ở TRANG THANH TOÁN (CHECKOUT) =================
+            if (isInCheckoutPage) {
+                if (!hasSelectedVoucher) {
+                    // Chưa chọn được mã: Lập tức bấm lại vào "Shopee Voucher" để mở lại danh sách mới!
+                    if (now - lastActionTime > 150) {
+                        lastActionTime = now
+                        Log.d(TAG, "Đang ở trang thanh toán -> Bấm vào lại 'Shopee Voucher' để tải mới...")
+                        clickFirstMatchingNode(
+                            rootNode,
+                            listOf(
+                                "Shopee Voucher",
+                                "Chọn hoặc nhập mã",
+                                "Chọn mã giảm giá",
+                                "Mã giảm giá",
+                                "Voucher của Shop",
+                                "Nhập mã voucher"
+                            )
+                        )
+                    }
+                } else {
+                    // Đã chọn xong mã thành công: Bấm nút "Đặt hàng" chốt đơn ngay!
+                    if (autoPlaceOrder) {
+                        val clickedOrder = clickFirstMatchingNode(
+                            rootNode,
+                            listOf("Đặt hàng", "ĐẶT HÀNG", "Thanh toán", "THANH TOÁN", "Mua hàng", "MUA HÀNG")
+                        )
+                        if (clickedOrder) {
+                            vibrateAlert(200)
+                            Log.d(TAG, "Chốt đơn ĐẶT HÀNG thành công!")
+                        }
+                    }
                 }
+                return
+            }
+
+            // ================= TRƯỜNG HỢP 3: DỰ PHÒNG =================
+            // Quét tìm nút "Đặt hàng" hoặc "Áp dụng" bất cứ đâu nếu đang hiển thị
+            if (hasSelectedVoucher && autoPlaceOrder) {
+                clickFirstMatchingNode(
+                    rootNode,
+                    listOf("Đặt hàng", "ĐẶT HÀNG", "Thanh toán", "THANH TOÁN")
+                )
             }
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing hunt step: ${e.message}")
+            Log.e(TAG, "Lỗi trong executeSmartHuntLoop: ${e.message}")
         }
+    }
+
+    private fun isCurrentlyInVoucherSheet(rootNode: AccessibilityNodeInfo): Boolean {
+        val hasConfirmBtn = hasAnyText(rootNode, listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "Áp dụng"))
+        val hasVoucherTitle = hasAnyText(rootNode, listOf("Chọn Shopee Voucher", "Shopee Voucher", "Mã giảm giá", "Nhập mã Voucher"))
+        return hasConfirmBtn && hasVoucherTitle
+    }
+
+    private fun isCurrentlyInCheckoutPage(rootNode: AccessibilityNodeInfo): Boolean {
+        val hasOrderBtn = hasAnyText(rootNode, listOf("Đặt hàng", "ĐẶT HÀNG", "Thanh toán", "THANH TOÁN"))
+        val hasCheckoutElements = hasAnyText(rootNode, listOf("Tổng thanh toán", "Phương thức thanh toán", "Shopee Voucher"))
+        return hasOrderBtn || hasCheckoutElements
+    }
+
+    /**
+     * Tìm chính xác thẻ voucher khớp với mã mà người dùng đã chọn
+     */
+    private fun findMatchingVoucherNode(rootNode: AccessibilityNodeInfo, targetCode: String): AccessibilityNodeInfo? {
+        if (targetCode.isBlank()) return null
+        val cleanTarget = targetCode.trim().lowercase()
+
+        // 1. Tìm khớp trực tiếp
+        val directMatches = rootNode.findAccessibilityNodeInfosByText(targetCode)
+        for (node in directMatches) {
+            val clickableParent = findClickableAncestor(node)
+            return clickableParent ?: node
+        }
+
+        // 2. Tìm thông minh theo các từ khóa đặc trưng (Ví dụ: "giảm 35%", "150k", "giảm 50%")
+        val keywords = extractKeywords(cleanTarget)
+        if (keywords.isNotEmpty()) {
+            val allNodes = mutableListOf<AccessibilityNodeInfo>()
+            fun traverse(node: AccessibilityNodeInfo?) {
+                if (node == null) return
+                val text = node.text?.toString()?.lowercase() ?: ""
+                val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+
+                // Nếu chứa toàn bộ các từ khóa nhận diện của mã
+                if (keywords.all { text.contains(it) || desc.contains(it) }) {
+                    allNodes.add(node)
+                }
+                for (i in 0 until node.childCount) {
+                    traverse(node.getChild(i))
+                }
+            }
+            traverse(rootNode)
+
+            for (node in allNodes) {
+                val clickable = findClickableAncestor(node)
+                return clickable ?: node
+            }
+        }
+
+        return null
+    }
+
+    private fun extractKeywords(text: String): List<String> {
+        val tokens = mutableListOf<String>()
+        val lower = text.lowercase()
+
+        // Bóc % (Ví dụ 35%, 50%)
+        val percentMatch = Regex("(\\d+%)").find(lower)
+        percentMatch?.value?.let { tokens.add(it) }
+
+        // Bóc số tiền (Ví dụ 150k, 50k, 500k)
+        val moneyMatch = Regex("(\\d+k)").find(lower)
+        moneyMatch?.value?.let { tokens.add(it) }
+
+        // Bóc tiền tố mã SVIP
+        if (lower.startsWith("svip")) {
+            tokens.add(lower.take(8))
+        }
+
+        return tokens
+    }
+
+    private fun isAlphanumericCode(code: String): Boolean {
+        return code.length >= 6 && code.all { it.isLetterOrDigit() || it == '_' || it == '-' }
+    }
+
+    private fun tryFillVoucherEditText(rootNode: AccessibilityNodeInfo, code: String): Boolean {
+        val inputNodes = findNodesByTextOrHint(rootNode, listOf("nhập mã", "voucher", "mã giảm giá", "coupon"))
+        for (node in inputNodes) {
+            if (node.isEditable) {
+                val arguments = Bundle()
+                arguments.putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    code
+                )
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun hasAnyText(rootNode: AccessibilityNodeInfo, texts: List<String>): Boolean {
+        for (text in texts) {
+            val nodes = rootNode.findAccessibilityNodeInfosByText(text)
+            if (nodes.isNotEmpty()) return true
+        }
+        return false
+    }
+
+    private fun findClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = node
+        while (current != null) {
+            if (current.isClickable) return current
+            current = current.parent
+        }
+        return null
     }
 
     private fun clickFirstMatchingNode(rootNode: AccessibilityNodeInfo, targetTexts: List<String>): Boolean {
@@ -161,11 +338,7 @@ class TayGanAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Thuật toán chạm vân tay người thật (Human Fingerprint Emulation):
-     * - KHÔNG chạm vào tâm toán học cố định 100%
-     * - Tạo độ lệch ngẫu nhiên (Offset Jitter) trong phạm vi nút bấm
-     * - Tạo độ trượt vi mô 1-2 pixel mô phỏng da đầu ngón tay biến dạng khi ấn xuống kính
-     * - Thời gian tiếp xúc da (Contact Duration) biến thiên tự nhiên 45ms - 75ms
+     * Mô phỏng chạm ngón tay người thật với độ lệch vân tay và độ trượt vi mô
      */
     private fun performHumanLikeClick(node: AccessibilityNodeInfo): Boolean {
         val bounds = Rect()
@@ -175,30 +348,24 @@ class TayGanAccessibilityService : AccessibilityService() {
             val width = bounds.width().toFloat()
             val height = bounds.height().toFloat()
 
-            // Vùng an toàn 60% bên trong nút (tránh mép nút)
             val safeRadiusX = width * 0.25f
             val safeRadiusY = height * 0.25f
 
-            // Tạo tọa độ ngẫu nhiên rơi vào vân tay người bấm
             val randomOffsetX = (Random.nextFloat() * 2f - 1f) * safeRadiusX
             val randomOffsetY = (Random.nextFloat() * 2f - 1f) * safeRadiusY
 
             val startX = bounds.centerX() + randomOffsetX
             val startY = bounds.centerY() + randomOffsetY
 
-            // Độ trượt vi mô (Flesh Micro-Drift): 1.0 - 2.5 pixel theo hướng ấn
             val driftX = startX + (Random.nextFloat() * 2f - 1f) * 1.8f
             val driftY = startY + (Random.nextFloat() * 2f - 1f) * 1.8f
 
-            // Thời gian ấn giữ tự nhiên của ngón cái (45ms - 75ms)
             val contactDuration = Random.nextLong(45, 75)
 
-            // Bắn cử chỉ cảm ứng phần cứng thực tế (Hardware MotionEvent)
             dispatchHumanTapGesture(startX, startY, driftX, driftY, contactDuration)
             return true
         }
 
-        // Dự phòng: Nếu bounds không hợp lệ mới dùng action click
         if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
             return true
         }
@@ -212,9 +379,6 @@ class TayGanAccessibilityService : AccessibilityService() {
         return false
     }
 
-    /**
-     * Bắn MotionEvent thật qua đường kính cử chỉ dispatchGesture
-     */
     private fun dispatchHumanTapGesture(
         startX: Float,
         startY: Float,
