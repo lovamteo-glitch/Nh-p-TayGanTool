@@ -43,7 +43,7 @@ class TayGanAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var spamJob: Job? = null
 
-    // State machine cho quy trình: Vào voucher -> Quét -> Chưa thấy thì Back ra -> Vào lại -> Thấy mã thì Áp & Đặt hàng
+    // Quản lý trạng thái săn voucher
     private var hasSelectedVoucher = false
     private var lastActionTime = 0L
 
@@ -51,7 +51,7 @@ class TayGanAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         _serviceStatusFlow.value = true
-        Log.d(TAG, "TayGanAccessibilityService connected with Auto-Refresh & Re-enter Engine!")
+        Log.d(TAG, "TayGanAccessibilityService connected - Accurate Shopee Navigation Active!")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -71,25 +71,24 @@ class TayGanAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Khởi động quy trình săn sale thông minh
+     * Kích hoạt quy trình săn mã
      */
     fun triggerHunting(voucherCode: String, placeOrder: Boolean) {
         targetVoucherCode = voucherCode
         autoPlaceOrder = placeOrder
         isHuntingActive = true
         hasSelectedVoucher = false
-        lastActionTime = System.currentTimeMillis()
+        lastActionTime = 0L
 
         vibrateAlert(120)
-        Log.d(TAG, "Triggering hunting: Code=$voucherCode, AutoOrder=$placeOrder")
+        Log.d(TAG, "Triggered hunting: Code='$voucherCode', AutoOrder=$placeOrder")
 
         spamJob?.cancel()
         spamJob = serviceScope.launch {
-            // Chu kỳ săn lặp liên tục mỗi 60ms - 100ms
-            for (step in 0 until 120) { // Chạy bền bỉ trong 8-10 giây quanh mốc mở sale
+            for (step in 0 until 150) {
                 if (!isHuntingActive) break
                 executeSmartHuntLoop()
-                delay(Random.nextLong(65, 105))
+                delay(Random.nextLong(70, 110))
             }
         }
     }
@@ -102,45 +101,62 @@ class TayGanAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Vòng lặp săn thông minh (Auto Back & Re-enter):
-     * 1. Xác định đang ở trang nào (Trang Thanh Toán hay Trang Chọn Voucher)
-     * 2. Nếu ở trang Chọn Voucher:
-     *    - Quét tìm đúng mã mục tiêu.
-     *    - Nếu THẤY: Chọn mã -> Bấm "Đồng ý".
-     *    - Nếu CHƯA THẤY: Bấm Back thoát ra ngay lập tức!
-     * 3. Nếu ở trang Thanh Toán:
-     *    - Nếu chưa có mã: Bấm lại vào "Shopee Voucher" để tải lại danh sách mới (Refresh)!
-     *    - Nếu đã chọn xong mã: Bấm "Đặt hàng" chốt đơn!
+     * Thuật toán điều hướng chính xác giữa Trang Thanh Toán và Popup Chọn Voucher
      */
     private fun executeSmartHuntLoop() {
         val rootNode = rootInActiveWindow ?: return
         val now = System.currentTimeMillis()
 
         try {
-            val isInVoucherSheet = isCurrentlyInVoucherSheet(rootNode)
-            val isInCheckoutPage = isCurrentlyInCheckoutPage(rootNode)
+            val isPopup = isVoucherSelectionPopup(rootNode)
+            val isCheckout = isCheckoutScreen(rootNode)
 
-            // ================= TRƯỜNG HỢP 1: ĐANG Ở TRANG CHỌN VOUCHER =================
-            if (isInVoucherSheet) {
-                // Bước 1.1: Quét xem mã cần săn đã xuất hiện trong danh sách chưa
-                val matchedVoucherNode = findMatchingVoucherNode(rootNode, targetVoucherCode)
+            // ================= 1. KHI ĐANG Ở TRANG THANH TOÁN (CHECKOUT) =================
+            if (isCheckout) {
+                // TUYỆT ĐỐI KHÔNG BẤM BACK TRÊN TRANG THANH TOÁN!
 
-                if (matchedVoucherNode != null) {
-                    // ĐÃ TÌM THẤY ĐÚNG MÃ!
-                    Log.d(TAG, "Đã tìm thấy đúng voucher mục tiêu: $targetVoucherCode")
-                    performHumanLikeClick(matchedVoucherNode)
+                if (!hasSelectedVoucher) {
+                    // Chưa chọn được voucher -> Bấm vào dòng "Shopee Voucher" để mở bảng chọn mã!
+                    if (now - lastActionTime > 250) { // Giữ nhịp 250ms tránh nhấp đúp
+                        lastActionTime = now
+                        Log.d(TAG, "Đang ở trang Thanh toán -> Bấm vào mục 'Shopee Voucher' ở dưới...")
+                        clickShopeeVoucherRow(rootNode)
+                    }
+                } else {
+                    // Đã chọn xong voucher -> Bấm nút "Đặt hàng" / "Thanh toán" chốt đơn ngay!
+                    if (autoPlaceOrder) {
+                        Log.d(TAG, "Đã áp voucher xong -> Bấm nút 'Đặt hàng'!")
+                        val clicked = clickFirstMatchingNode(
+                            rootNode,
+                            listOf("Đặt hàng", "ĐẶT HÀNG", "Thanh toán", "THANH TOÁN")
+                        )
+                        if (clicked) {
+                            vibrateAlert(200)
+                        }
+                    }
+                }
+                return
+            }
+
+            // ================= 2. KHI ĐANG Ở BẢNG CHỌN VOUCHER (POPUP / SHEET) =================
+            if (isPopup) {
+                // Bước 2.1: Quét xem mã cần săn đã xuất hiện trong danh sách chưa
+                val voucherNode = findMatchingVoucherNode(rootNode, targetVoucherCode)
+                if (voucherNode != null) {
+                    Log.d(TAG, "Đã tìm thấy mã mục tiêu trong danh sách: $targetVoucherCode -> Bấm chọn!")
+                    performHumanLikeClick(voucherNode)
                     hasSelectedVoucher = true
                     vibrateAlert(80)
 
-                    // Bấm nút "Đồng ý" / "Áp dụng" / "OK" để xác nhận
+                    // Bấm nút "Đồng ý" / "Xác nhận" để lưu lựa chọn và đóng popup
                     clickFirstMatchingNode(
                         rootNode,
-                        listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "XÁC NHẬN", "OK", "Áp dụng", "Áp Dụng")
+                        listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "XÁC NHẬN", "OK", "Áp dụng")
                     )
                     return
                 }
 
-                // Bước 1.2: Nếu có ô nhập mã, tự động điền mã nếu là mã nhập tay
+                // Bước 2.2: Nếu có ô nhập mã dạng text (VD SVIPDD...), tự động điền mã
                 if (isAlphanumericCode(targetVoucherCode)) {
                     val inputFilled = tryFillVoucherEditText(rootNode, targetVoucherCode)
                     if (inputFilled) {
@@ -151,56 +167,26 @@ class TayGanAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                // Bước 1.3: NẾU CHƯA HIỆN MÃ (Mã chưa nạp/chưa mở):
-                // Đúng như chiến thuật pro: THOÁT RA để không bị kẹt ở danh sách cũ!
-                if (now - lastActionTime > 180) { // Giữ nhịp 180ms tránh spam giật lag
+                // Bước 2.3: NẾU CHƯA HIỆN MÃ TRONG DANH SÁCH:
+                // Thoát bảng chọn mã ra để về lại trang thanh toán, sau đó mở lại để Shopee tải mới (Refresh)!
+                if (now - lastActionTime > 300) {
                     lastActionTime = now
-                    Log.d(TAG, "Chưa thấy mã $targetVoucherCode -> Thực hiện BACK ra ngoài để refresh...")
-                    val clickedBack = clickFirstMatchingNode(rootNode, listOf("Trở lại", "Quay lại", "Close"))
-                    if (!clickedBack) {
+                    Log.d(TAG, "Chưa thấy mã trong popup -> Đóng popup để làm mới danh sách...")
+                    // Thử bấm nút Đóng (X) hoặc mũi tên quay lại của popup trước
+                    val closedByButton = clickFirstMatchingNode(
+                        rootNode,
+                        listOf("Trở lại", "Quay lại", "Close", "Đóng")
+                    )
+                    if (!closedByButton) {
+                        // Nếu không thấy nút đóng thì dùng nút Back để đóng popup
                         performGlobalAction(GLOBAL_ACTION_BACK)
                     }
                 }
                 return
             }
 
-            // ================= TRƯỜNG HỢP 2: ĐANG Ở TRANG THANH TOÁN (CHECKOUT) =================
-            if (isInCheckoutPage) {
-                if (!hasSelectedVoucher) {
-                    // Chưa chọn được mã: Lập tức bấm lại vào "Shopee Voucher" để mở lại danh sách mới!
-                    if (now - lastActionTime > 150) {
-                        lastActionTime = now
-                        Log.d(TAG, "Đang ở trang thanh toán -> Bấm vào lại 'Shopee Voucher' để tải mới...")
-                        clickFirstMatchingNode(
-                            rootNode,
-                            listOf(
-                                "Shopee Voucher",
-                                "Chọn hoặc nhập mã",
-                                "Chọn mã giảm giá",
-                                "Mã giảm giá",
-                                "Voucher của Shop",
-                                "Nhập mã voucher"
-                            )
-                        )
-                    }
-                } else {
-                    // Đã chọn xong mã thành công: Bấm nút "Đặt hàng" chốt đơn ngay!
-                    if (autoPlaceOrder) {
-                        val clickedOrder = clickFirstMatchingNode(
-                            rootNode,
-                            listOf("Đặt hàng", "ĐẶT HÀNG", "Thanh toán", "THANH TOÁN", "Mua hàng", "MUA HÀNG")
-                        )
-                        if (clickedOrder) {
-                            vibrateAlert(200)
-                            Log.d(TAG, "Chốt đơn ĐẶT HÀNG thành công!")
-                        }
-                    }
-                }
-                return
-            }
-
-            // ================= TRƯỜNG HỢP 3: DỰ PHÒNG =================
-            // Quét tìm nút "Đặt hàng" hoặc "Áp dụng" bất cứ đâu nếu đang hiển thị
+            // ================= 3. TRƯỜNG HỢP DỰ PHÒNG =================
+            // Nếu đã chọn xong voucher và nhìn thấy nút Đặt hàng bất kỳ đâu
             if (hasSelectedVoucher && autoPlaceOrder) {
                 clickFirstMatchingNode(
                     rootNode,
@@ -209,20 +195,66 @@ class TayGanAccessibilityService : AccessibilityService() {
             }
 
         } catch (e: Exception) {
-            Log.e(TAG, "Lỗi trong executeSmartHuntLoop: ${e.message}")
+            Log.e(TAG, "Lỗi điều hướng: ${e.message}")
         }
     }
 
-    private fun isCurrentlyInVoucherSheet(rootNode: AccessibilityNodeInfo): Boolean {
-        val hasConfirmBtn = hasAnyText(rootNode, listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "Áp dụng"))
-        val hasVoucherTitle = hasAnyText(rootNode, listOf("Chọn Shopee Voucher", "Shopee Voucher", "Mã giảm giá", "Nhập mã Voucher"))
-        return hasConfirmBtn && hasVoucherTitle
+    /**
+     * Nhận diện Trang Thanh Toán:
+     * Luôn có nút "Đặt hàng" hoặc tiêu đề "Thanh toán".
+     */
+    private fun isCheckoutScreen(rootNode: AccessibilityNodeInfo): Boolean {
+        val hasOrderBtn = rootNode.findAccessibilityNodeInfosByText("Đặt hàng").isNotEmpty() ||
+                rootNode.findAccessibilityNodeInfosByText("ĐẶT HÀNG").isNotEmpty()
+        val hasCheckoutTitle = rootNode.findAccessibilityNodeInfosByText("Thanh toán").isNotEmpty() ||
+                rootNode.findAccessibilityNodeInfosByText("Tổng thanh toán").isNotEmpty()
+        return hasOrderBtn || hasCheckoutTitle
     }
 
-    private fun isCurrentlyInCheckoutPage(rootNode: AccessibilityNodeInfo): Boolean {
-        val hasOrderBtn = hasAnyText(rootNode, listOf("Đặt hàng", "ĐẶT HÀNG", "Thanh toán", "THANH TOÁN"))
-        val hasCheckoutElements = hasAnyText(rootNode, listOf("Tổng thanh toán", "Phương thức thanh toán", "Shopee Voucher"))
-        return hasOrderBtn || hasCheckoutElements
+    /**
+     * Nhận diện Bảng Chọn Voucher (Popup):
+     * Có nút "Đồng ý" hoặc tiêu đề "Chọn Shopee Voucher", và KHÔNG PHẢI là trang Thanh toán (không có nút "Đặt hàng").
+     */
+    private fun isVoucherSelectionPopup(rootNode: AccessibilityNodeInfo): Boolean {
+        val hasOrderBtn = rootNode.findAccessibilityNodeInfosByText("Đặt hàng").isNotEmpty() ||
+                rootNode.findAccessibilityNodeInfosByText("ĐẶT HÀNG").isNotEmpty()
+        if (hasOrderBtn) {
+            return false // Có nút Đặt hàng thì 100% là trang Thanh toán, không phải popup!
+        }
+
+        val hasConfirmBtn = rootNode.findAccessibilityNodeInfosByText("Đồng ý").isNotEmpty() ||
+                rootNode.findAccessibilityNodeInfosByText("ĐỒNG Ý").isNotEmpty() ||
+                rootNode.findAccessibilityNodeInfosByText("Xác nhận").isNotEmpty()
+        val hasVoucherTitle = rootNode.findAccessibilityNodeInfosByText("Chọn Shopee Voucher").isNotEmpty() ||
+                rootNode.findAccessibilityNodeInfosByText("Nhập mã Voucher").isNotEmpty() ||
+                rootNode.findAccessibilityNodeInfosByText("Mã Giảm Giá").isNotEmpty()
+
+        return hasConfirmBtn || hasVoucherTitle
+    }
+
+    /**
+     * Bấm chính xác vào dòng "Shopee Voucher" ở cuối trang Thanh toán
+     */
+    private fun clickShopeeVoucherRow(rootNode: AccessibilityNodeInfo): Boolean {
+        val keywords = listOf(
+            "Shopee Voucher",
+            "Miễn Phí Vận Chuyển",
+            "Chọn hoặc nhập mã",
+            "Mã giảm giá",
+            "Voucher của Shop"
+        )
+
+        for (kw in keywords) {
+            val nodes = rootNode.findAccessibilityNodeInfosByText(kw)
+            for (node in nodes) {
+                val clickable = findClickableAncestor(node) ?: node
+                if (performHumanLikeClick(clickable)) {
+                    Log.d(TAG, "Đã bấm vào dòng Shopee Voucher thành công (khóa: '$kw')")
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     /**
@@ -232,14 +264,14 @@ class TayGanAccessibilityService : AccessibilityService() {
         if (targetCode.isBlank()) return null
         val cleanTarget = targetCode.trim().lowercase()
 
-        // 1. Tìm khớp trực tiếp
+        // 1. Tìm khớp chính xác toàn phần
         val directMatches = rootNode.findAccessibilityNodeInfosByText(targetCode)
         for (node in directMatches) {
             val clickableParent = findClickableAncestor(node)
             return clickableParent ?: node
         }
 
-        // 2. Tìm thông minh theo các từ khóa đặc trưng (Ví dụ: "giảm 35%", "150k", "giảm 50%")
+        // 2. Tìm thông minh theo các từ khóa đặc trưng (VD: "giảm 35%", "150k", "giảm 50%")
         val keywords = extractKeywords(cleanTarget)
         if (keywords.isNotEmpty()) {
             val allNodes = mutableListOf<AccessibilityNodeInfo>()
@@ -248,7 +280,6 @@ class TayGanAccessibilityService : AccessibilityService() {
                 val text = node.text?.toString()?.lowercase() ?: ""
                 val desc = node.contentDescription?.toString()?.lowercase() ?: ""
 
-                // Nếu chứa toàn bộ các từ khóa nhận diện của mã
                 if (keywords.all { text.contains(it) || desc.contains(it) }) {
                     allNodes.add(node)
                 }
@@ -271,15 +302,12 @@ class TayGanAccessibilityService : AccessibilityService() {
         val tokens = mutableListOf<String>()
         val lower = text.lowercase()
 
-        // Bóc % (Ví dụ 35%, 50%)
         val percentMatch = Regex("(\\d+%)").find(lower)
         percentMatch?.value?.let { tokens.add(it) }
 
-        // Bóc số tiền (Ví dụ 150k, 50k, 500k)
         val moneyMatch = Regex("(\\d+k)").find(lower)
         moneyMatch?.value?.let { tokens.add(it) }
 
-        // Bóc tiền tố mã SVIP
         if (lower.startsWith("svip")) {
             tokens.add(lower.take(8))
         }
@@ -307,14 +335,6 @@ class TayGanAccessibilityService : AccessibilityService() {
         return false
     }
 
-    private fun hasAnyText(rootNode: AccessibilityNodeInfo, texts: List<String>): Boolean {
-        for (text in texts) {
-            val nodes = rootNode.findAccessibilityNodeInfosByText(text)
-            if (nodes.isNotEmpty()) return true
-        }
-        return false
-    }
-
     private fun findClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var current: AccessibilityNodeInfo? = node
         while (current != null) {
@@ -338,7 +358,7 @@ class TayGanAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Mô phỏng chạm ngón tay người thật với độ lệch vân tay và độ trượt vi mô
+     * Bắn cử chỉ cảm ứng mô phỏng vân tay người thật
      */
     private fun performHumanLikeClick(node: AccessibilityNodeInfo): Boolean {
         val bounds = Rect()
@@ -424,8 +444,8 @@ class TayGanAccessibilityService : AccessibilityService() {
     private fun vibrateAlert(durationMs: Long) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-                vibratorManager.defaultVibrator.vibrate(
+                val vibratorManager = getSystemService(Context.VIBRATOR_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator?.vibrate(
                     VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE)
                 )
             } else {
