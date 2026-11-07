@@ -95,9 +95,40 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnGrantAccessibility.setOnClickListener {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(intent)
-            Toast.makeText(this, "Vui lòng tìm 'Tay Gân Tool' và BẬT công tắc!", Toast.LENGTH_LONG).show()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // Android 13+
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Cấp quyền Trợ Năng (Accessibility)")
+                    .setMessage(
+                        "⚠️ LƯU Ý CHO ANDROID 13 & 14:\n\n" +
+                        "Nếu điện thoại hiện thông báo:\n" +
+                        "\"Chế độ cài đặt bị hạn chế\"\n\n" +
+                        "👉 Cách gỡ chặn cực nhanh (15 giây):\n" +
+                        "1. Bấm nút [Gỡ chặn 3 chấm] bên dưới để mở Thông tin ứng dụng.\n" +
+                        "2. Nhìn góc trên bên phải, bấm vào [Dấu 3 chấm ⋮].\n" +
+                        "3. Chọn [Cho phép cài đặt bị hạn chế] (quét vân tay xác nhận).\n" +
+                        "4. Quay lại đây bấm nút [Vào Cài Đặt Trợ Năng] và BẬT công tắc 'Tay Gân Tool'!"
+                    )
+                    .setPositiveButton("Vào Cài Đặt Trợ Năng") { _, _ ->
+                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                        startActivity(intent)
+                    }
+                    .setNeutralButton("Gỡ chặn 3 chấm") { _, _ ->
+                        try {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.fromParts("package", packageName, null)
+                            }
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(this, "Không thể mở cài đặt: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .setNegativeButton("Đóng", null)
+                    .show()
+            } else {
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                startActivity(intent)
+                Toast.makeText(this, "Vui lòng tìm 'Tay Gân Tool' và BẬT công tắc!", Toast.LENGTH_LONG).show()
+            }
         }
 
         btnGrantBattery.setOnClickListener {
