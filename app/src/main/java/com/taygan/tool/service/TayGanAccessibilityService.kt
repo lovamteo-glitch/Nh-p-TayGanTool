@@ -33,6 +33,21 @@ class TayGanAccessibilityService : AccessibilityService() {
         private val _serviceStatusFlow = MutableStateFlow(false)
         val serviceStatusFlow = _serviceStatusFlow.asStateFlow()
 
+        private val _logFlow = MutableStateFlow(
+            "12:01:14.735 CLICK node ← đóng màn voucher\n12:01:14.682 ◀ Không thấy voucher"
+        )
+        val logFlow = _logFlow.asStateFlow()
+
+        fun postLog(msg: String) {
+            val df = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
+            val timestamp = df.format(java.util.Date())
+            val newLine = "$timestamp $msg"
+            Log.d(TAG, newLine)
+            val current = _logFlow.value.lines().takeLast(5).toMutableList()
+            current.add(newLine)
+            _logFlow.value = current.joinToString("\n")
+        }
+
         fun isConnected(): Boolean = instance != null
 
         // Hunting configs
@@ -141,7 +156,7 @@ class TayGanAccessibilityService : AccessibilityService() {
 
         // BƯỚC 1: XỬ LÝ POPUP LỖI SAU KHI ĐẶT HÀNG (Nếu có)
         if (dismissOrderPopup(rootNode)) {
-            Log.d(TAG, "Đã phát hiện và đóng popup thông báo lỗi đơn hàng để tiếp tục!")
+            postLog("Đã đóng popup lỗi để tiếp tục")
             return
         }
 
@@ -156,7 +171,7 @@ class TayGanAccessibilityService : AccessibilityService() {
                     lastActionTime = now
                     val entryNode = findVoucherEntryNode(rootNode)
                     if (entryNode != null) {
-                        Log.d(TAG, "▶ Đang ở Thanh toán -> Bấm nút [buttonCartPageUseVoucher] mở popup...")
+                        postLog("▶ Bấm nút buttonCartPageUseVoucher mở popup...")
                         clickOrTap(entryNode, "Vào mục Voucher")
                     }
                 }
@@ -167,7 +182,7 @@ class TayGanAccessibilityService : AccessibilityService() {
                     if (orderBtn != null) {
                         consecutiveOrderClicks++
                         if (consecutiveOrderClicks % 5 == 1) {
-                            Log.d(TAG, "★ Bấm ĐẶT HÀNG (lần $consecutiveOrderClicks) qua buttonPlaceOrder!")
+                            postLog("★ Bấm ĐẶT HÀNG qua buttonPlaceOrder (lần $consecutiveOrderClicks)!")
                         }
                         clickOrTap(orderBtn, "Đặt hàng")
                         vibrateAlert(70)
@@ -182,7 +197,7 @@ class TayGanAccessibilityService : AccessibilityService() {
             // 3.1: Quét tìm Radio Button hoặc thẻ của Voucher mục tiêu
             val targetRadio = findTargetVoucherRadio(rootNode, targetVoucherCode)
             if (targetRadio != null) {
-                Log.d(TAG, "★ ĐÃ TÌM THẤY VOUCHER mục tiêu -> Chọn ngay!")
+                postLog("★ ĐÃ TÌM THẤY VOUCHER mục tiêu -> Chọn ngay!")
                 clickOrTap(targetRadio, "Chọn radio voucher")
                 hasSelectedVoucher = true
                 vibrateAlert(100)
@@ -190,7 +205,7 @@ class TayGanAccessibilityService : AccessibilityService() {
                 // 3.2: Bấm nút "Đồng ý" (btnOkVoucherSelectionSubmitSection)
                 val submitBtn = findVoucherSubmitNode(rootNode)
                 if (submitBtn != null) {
-                    Log.d(TAG, "✔ Bấm nút [btnOkVoucherSelectionSubmitSection] (Đồng ý)!")
+                    postLog("✔ Bấm nút btnOkVoucherSelectionSubmitSection (Đồng ý)!")
                     clickOrTap(submitBtn, "Đồng ý áp voucher")
                 } else {
                     clickFirstMatchingText(rootNode, listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "Áp dụng"))
@@ -218,7 +233,7 @@ class TayGanAccessibilityService : AccessibilityService() {
             // Thực hiện vòng lặp "Back -> Re-enter" để tải lại danh sách voucher tức thì!
             if (now - lastActionTime > 250) {
                 lastActionTime = now
-                Log.d(TAG, "◀ Chưa thấy mã trong popup -> Thoát ra để vào lại refresh...")
+                postLog("◀ Không thấy voucher -> Đóng màn voucher để vào lại")
                 val backBtn = findVoucherBackNode(rootNode)
                 if (backBtn != null) {
                     clickOrTap(backBtn, "Đóng màn voucher")

@@ -1,155 +1,114 @@
 package com.taygan.tool
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
 import android.provider.Settings
-import android.widget.Button
-import android.widget.EditText
+import android.view.View
+import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.taygan.tool.api.ShopeeApiService
-import com.taygan.tool.api.ShopeeSessionManager
 import com.taygan.tool.service.FloatingWindowService
 import com.taygan.tool.service.TayGanAccessibilityService
-import com.taygan.tool.utils.PrefManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var tvOverlayStatus: TextView
-    private lateinit var btnGrantOverlay: Button
-    private lateinit var tvAccessibilityStatus: TextView
-    private lateinit var btnGrantAccessibility: Button
-    private lateinit var btnGrantBattery: Button
-    private lateinit var btnToggleFloatingWindow: Button
-    private lateinit var btnStopAllServices: Button
+    private lateinit var tvDeviceIdValue: TextView
+    private lateinit var tvAccessibilityTitle: TextView
+    private lateinit var tvAccessibilitySubtitle: TextView
+    private lateinit var iconA11yBox: FrameLayout
+    private lateinit var tvLiveLog: TextView
+    private lateinit var btnSendLog: TextView
+    private lateinit var btnSettings: FrameLayout
 
-    // Shopee API Session
-    private lateinit var tvShopeeAccountStatus: TextView
-    private lateinit var btnShopeeLogin: Button
-    private lateinit var btnPasteCookie: Button
-    private lateinit var btnSyncCloudVouchers: Button
+    private lateinit var cardDeviceId: View
+    private lateinit var cardAccessibility: View
+    private lateinit var cardOpenTool: View
+    private lateinit var cardSaveVoucher: View
+    private lateinit var cardLicense: View
 
-    private lateinit var sessionManager: ShopeeSessionManager
-    private lateinit var prefManager: PrefManager
-    private lateinit var apiService: ShopeeApiService
+    private var currentDeviceId = "4e69c3a05444f43b"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        sessionManager = ShopeeSessionManager.getInstance(this)
-        prefManager = PrefManager(this)
-        apiService = ShopeeApiService(this)
-
         initViews()
+        loadDeviceInfo()
         setupListeners()
-        startStatusObserver()
+        startLiveLogObserver()
     }
 
     override fun onResume() {
         super.onResume()
-        updatePermissionStatus()
-        updateShopeeSessionStatus()
+        updateAccessibilityUI()
     }
 
     private fun initViews() {
-        tvOverlayStatus = findViewById(R.id.tvOverlayStatus)
-        btnGrantOverlay = findViewById(R.id.btnGrantOverlay)
-        tvAccessibilityStatus = findViewById(R.id.tvAccessibilityStatus)
-        btnGrantAccessibility = findViewById(R.id.btnGrantAccessibility)
-        btnGrantBattery = findViewById(R.id.btnGrantBattery)
-        btnToggleFloatingWindow = findViewById(R.id.btnToggleFloatingWindow)
-        btnStopAllServices = findViewById(R.id.btnStopAllServices)
+        tvDeviceIdValue = findViewById(R.id.tvDeviceIdValue)
+        tvAccessibilityTitle = findViewById(R.id.tvAccessibilityTitle)
+        tvAccessibilitySubtitle = findViewById(R.id.tvAccessibilitySubtitle)
+        iconA11yBox = findViewById(R.id.iconA11yBox)
+        tvLiveLog = findViewById(R.id.tvLiveLog)
+        btnSendLog = findViewById(R.id.btnSendLog)
+        btnSettings = findViewById(R.id.btnSettings)
 
-        tvShopeeAccountStatus = findViewById(R.id.tvShopeeAccountStatus)
-        btnShopeeLogin = findViewById(R.id.btnShopeeLogin)
-        btnPasteCookie = findViewById(R.id.btnPasteCookie)
-        btnSyncCloudVouchers = findViewById(R.id.btnSyncCloudVouchers)
+        cardDeviceId = findViewById(R.id.cardDeviceId)
+        cardAccessibility = findViewById(R.id.cardAccessibility)
+        cardOpenTool = findViewById(R.id.cardOpenTool)
+        cardSaveVoucher = findViewById(R.id.cardSaveVoucher)
+        cardLicense = findViewById(R.id.cardLicense)
+    }
+
+    @SuppressLint("HardwareIds")
+    private fun loadDeviceInfo() {
+        val id = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+        if (!id.isNullOrBlank()) {
+            currentDeviceId = id
+        }
+        tvDeviceIdValue.text = currentDeviceId
     }
 
     private fun setupListeners() {
-        btnGrantOverlay.setOnClickListener {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                if (!Settings.canDrawOverlays(this)) {
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:$packageName")
-                    )
-                    startActivity(intent)
-                } else {
-                    Toast.makeText(this, "Quyền Cửa sổ nổi đã được cấp!", Toast.LENGTH_SHORT).show()
-                }
-            }
+        // 1. Sao chép Device ID khi bấm vào Card
+        cardDeviceId.setOnClickListener {
+            copyToClipboard("Device ID", currentDeviceId)
+            Toast.makeText(this, "Đã sao chép Device ID: $currentDeviceId", Toast.LENGTH_SHORT).show()
         }
 
-        btnGrantAccessibility.setOnClickListener {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // Android 13+
-                androidx.appcompat.app.AlertDialog.Builder(this)
-                    .setTitle("Cấp quyền Trợ Năng (Accessibility)")
-                    .setMessage(
-                        "⚠️ LƯU Ý CHO ANDROID 13 & 14:\n\n" +
-                        "Nếu điện thoại hiện thông báo:\n" +
-                        "\"Chế độ cài đặt bị hạn chế\"\n\n" +
-                        "👉 Cách gỡ chặn cực nhanh (15 giây):\n" +
-                        "1. Bấm nút [Gỡ chặn 3 chấm] bên dưới để mở Thông tin ứng dụng.\n" +
-                        "2. Nhìn góc trên bên phải, bấm vào [Dấu 3 chấm ⋮].\n" +
-                        "3. Chọn [Cho phép cài đặt bị hạn chế] (quét vân tay xác nhận).\n" +
-                        "4. Quay lại đây bấm nút [Vào Cài Đặt Trợ Năng] và BẬT công tắc 'Tay Gân Tool'!"
-                    )
-                    .setPositiveButton("Vào Cài Đặt Trợ Năng") { _, _ ->
-                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                        startActivity(intent)
+        // 2. Bật / Tắt Quyền Trợ Năng (Accessibility)
+        cardAccessibility.setOnClickListener {
+            val isRunning = TayGanAccessibilityService.isConnected()
+            if (isRunning) {
+                AlertDialog.Builder(this)
+                    .setTitle("Quản lý Trợ Năng")
+                    .setMessage("Dịch vụ Trợ Năng đang BẬT và sẵn sàng săn sale.\nBạn có muốn mở Cài đặt để tắt không?")
+                    .setPositiveButton("Vào Cài Đặt") { _, _ ->
+                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     }
-                    .setNeutralButton("Gỡ chặn 3 chấm") { _, _ ->
-                        try {
-                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                data = Uri.fromParts("package", packageName, null)
-                            }
-                            startActivity(intent)
-                        } catch (e: Exception) {
-                            Toast.makeText(this, "Không thể mở cài đặt: ${e.message}", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    .setNegativeButton("Đóng", null)
+                    .setNegativeButton("Hủy", null)
                     .show()
             } else {
-                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                startActivity(intent)
-                Toast.makeText(this, "Vui lòng tìm 'Tay Gân Tool' và BẬT công tắc!", Toast.LENGTH_LONG).show()
+                handleEnableAccessibility()
             }
         }
 
-        btnGrantBattery.setOnClickListener {
-            requestIgnoreBatteryOptimization()
-        }
-
-        btnShopeeLogin.setOnClickListener {
-            startActivity(Intent(this, ShopeeLoginActivity::class.java))
-        }
-
-        btnPasteCookie.setOnClickListener {
-            showPasteCookieDialog()
-        }
-
-        btnSyncCloudVouchers.setOnClickListener {
-            syncVouchersFromCloud()
-        }
-
-        btnToggleFloatingWindow.setOnClickListener {
+        // 3. Mở Tool săn mã (Bảng nổi Overlay)
+        cardOpenTool.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                Toast.makeText(this, "Vui lòng cấp quyền Hiển thị trên ứng dụng khác!", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Vui lòng cấp quyền Hiển thị trên ứng dụng khác!", Toast.LENGTH_SHORT).show()
                 val intent = Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     Uri.parse("package:$packageName")
@@ -158,7 +117,6 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
-            // Start Floating Service an toàn không crash
             val intent = Intent(this, FloatingWindowService::class.java)
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -166,146 +124,110 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     startService(intent)
                 }
-                Toast.makeText(this, "Đã mở bảng điều khiển nổi thành công!", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
+                Toast.makeText(this, "Đã mở Tool săn mã thành công!", Toast.LENGTH_SHORT).show()
+            } catch (e: Throwable) {
                 try {
                     startService(intent)
-                } catch (err: Exception) {
-                    Toast.makeText(this, "Lỗi khởi động service: ${err.message}", Toast.LENGTH_LONG).show()
+                } catch (err: Throwable) {
+                    Toast.makeText(this, "Lỗi mở tool: ${err.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
 
-        btnStopAllServices.setOnClickListener {
-            val intent = Intent(this, FloatingWindowService::class.java)
-            stopService(intent)
-            Toast.makeText(this, "Đã đóng cửa sổ nổi!", Toast.LENGTH_SHORT).show()
+        // 4. Lưu Voucher qua Web / API
+        cardSaveVoucher.setOnClickListener {
+            startActivity(Intent(this, ShopeeLoginActivity::class.java))
+        }
+
+        // 5. Nút Cài Đặt (Bánh răng)
+        btnSettings.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Tay Gân Tool v9")
+                .setMessage("Phiên bản: 1.0.0 (v9)\nKênh hỗ trợ: t.me/Tanpham91\nTrạng thái bản quyền: Đang sử dụng (30 ngày)")
+                .setPositiveButton("Mở Telegram") { _, _ ->
+                    try {
+                        val telegramIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/Tanpham91"))
+                        startActivity(telegramIntent)
+                    } catch (_: Exception) {}
+                }
+                .setNegativeButton("Đóng", null)
+                .show()
+        }
+
+        // 6. Nút Gửi Log
+        btnSendLog.setOnClickListener {
+            val logText = tvLiveLog.text.toString()
+            copyToClipboard("TayGan Logs", logText)
+            Toast.makeText(this, "Đã sao chép Log vào bộ nhớ tạm!", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun updateShopeeSessionStatus() {
-        if (sessionManager.isLoggedIn) {
-            tvShopeeAccountStatus.text = "✓ Đã kết nối Shopee (Sẵn sàng lưu mã API ngầm)"
-            tvShopeeAccountStatus.setTextColor(ContextCompat.getColor(this, R.color.status_connected))
-            btnShopeeLogin.text = "Đăng nhập lại"
+    private fun handleEnableAccessibility() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // Android 13+
+            AlertDialog.Builder(this)
+                .setTitle("Cấp quyền Trợ Năng (Accessibility)")
+                .setMessage(
+                    "⚠️ LƯU Ý CHO ANDROID 13 & 14:\n\n" +
+                    "Nếu điện thoại hiện thông báo:\n" +
+                    "\"Chế độ cài đặt bị hạn chế\"\n\n" +
+                    "👉 Cách gỡ chặn cực nhanh (15 giây):\n" +
+                    "1. Bấm nút [Gỡ chặn 3 chấm] bên dưới để mở Thông tin ứng dụng.\n" +
+                    "2. Nhìn góc trên bên phải, bấm vào [Dấu 3 chấm ⋮].\n" +
+                    "3. Chọn [Cho phép cài đặt bị hạn chế] (quét vân tay xác nhận).\n" +
+                    "4. Quay lại đây bấm nút [Vào Cài Đặt Trợ Năng] và BẬT công tắc 'Tay Gân Tool'!"
+                )
+                .setPositiveButton("Vào Cài Đặt Trợ Năng") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+                .setNeutralButton("Gỡ chặn 3 chấm") { _, _ ->
+                    try {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", packageName, null)
+                        }
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "Không thể mở cài đặt: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("Đóng", null)
+                .show()
         } else {
-            tvShopeeAccountStatus.text = "Chưa kết nối tài khoản Shopee (Chưa thể lưu mã API)"
-            tvShopeeAccountStatus.setTextColor(ContextCompat.getColor(this, R.color.status_disconnected))
-            btnShopeeLogin.text = "Đăng nhập Shopee"
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            startActivity(intent)
+            Toast.makeText(this, "Vui lòng tìm 'Tay Gân Tool' và BẬT công tắc!", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun showPasteCookieDialog() {
-        val input = EditText(this).apply {
-            hint = "Dán chuỗi Cookie Shopee vào đây..."
-            setText(sessionManager.cookie)
+    private fun updateAccessibilityUI() {
+        val isRunning = TayGanAccessibilityService.isConnected()
+        if (isRunning) {
+            tvAccessibilityTitle.text = "Tắt trợ năng"
+            tvAccessibilitySubtitle.text = "Ngừng quyền truy cập"
+            iconA11yBox.background = ContextCompat.getDrawable(this, R.drawable.bg_icon_rose)
+        } else {
+            tvAccessibilityTitle.text = "Bật hỗ trợ tiếp cận"
+            tvAccessibilitySubtitle.text = "Cấp quyền cho app"
+            iconA11yBox.background = ContextCompat.getDrawable(this, R.drawable.bg_icon_rose)
         }
-
-        AlertDialog.Builder(this)
-            .setTitle("Nhập Cookie Shopee")
-            .setMessage("Dán toàn bộ Cookie (có chứa csrftoken và SPC_EC):")
-            .setView(input)
-            .setPositiveButton("Lưu") { _, _ ->
-                val text = input.text.toString().trim()
-                if (text.isNotBlank()) {
-                    sessionManager.cookie = text
-                    updateShopeeSessionStatus()
-                    Toast.makeText(this, "Đã lưu Cookie thành công!", Toast.LENGTH_SHORT).show()
-                }
-            }
-            .setNegativeButton("Hủy", null)
-            .show()
     }
 
-    private fun syncVouchersFromCloud() {
-        btnSyncCloudVouchers.isEnabled = false
-        btnSyncCloudVouchers.text = "Đang tải mã từ máy chủ NKQUI..."
-
+    private fun startLiveLogObserver() {
         lifecycleScope.launch {
-            val result = apiService.fetchRemoteVoucherConfig()
-            btnSyncCloudVouchers.isEnabled = true
-            btnSyncCloudVouchers.text = "Cập nhật mã từ Server (Kèm Signature API)"
-
-            result.onSuccess { vouchers ->
-                prefManager.saveVouchers(vouchers)
-                Toast.makeText(
-                    this@MainActivity,
-                    "Đã tải thành công ${vouchers.size} mã kèm chữ ký API!",
-                    Toast.LENGTH_LONG
-                ).show()
-            }.onFailure { error ->
-                Toast.makeText(
-                    this@MainActivity,
-                    "Không thể kết nối máy chủ voucher: ${error.message}",
-                    Toast.LENGTH_LONG
-                ).show()
+            TayGanAccessibilityService.logFlow.collect { logs ->
+                tvLiveLog.text = logs
             }
         }
-    }
-
-    private fun updatePermissionStatus() {
-        val hasOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(this)
-        } else {
-            true
-        }
-
-        if (hasOverlay) {
-            tvOverlayStatus.text = "Đã cấp quyền ✓"
-            tvOverlayStatus.setTextColor(ContextCompat.getColor(this, R.color.status_connected))
-            btnGrantOverlay.text = "Đã cấp"
-            btnGrantOverlay.isEnabled = false
-            btnGrantOverlay.alpha = 0.5f
-        } else {
-            tvOverlayStatus.text = "Chưa cấp quyền"
-            tvOverlayStatus.setTextColor(ContextCompat.getColor(this, R.color.status_disconnected))
-            btnGrantOverlay.text = "Cấp quyền"
-            btnGrantOverlay.isEnabled = true
-            btnGrantOverlay.alpha = 1.0f
-        }
-
-        val isAccessibilityActive = TayGanAccessibilityService.isConnected()
-        if (isAccessibilityActive) {
-            tvAccessibilityStatus.text = "Đã bật dịch vụ ✓"
-            tvAccessibilityStatus.setTextColor(ContextCompat.getColor(this, R.color.status_connected))
-            btnGrantAccessibility.text = "Đã bật"
-            btnGrantAccessibility.isEnabled = false
-            btnGrantAccessibility.alpha = 0.5f
-        } else {
-            tvAccessibilityStatus.text = "Chưa bật dịch vụ"
-            tvAccessibilityStatus.setTextColor(ContextCompat.getColor(this, R.color.status_disconnected))
-            btnGrantAccessibility.text = "Bật ngay"
-            btnGrantAccessibility.isEnabled = true
-            btnGrantAccessibility.alpha = 1.0f
-        }
-    }
-
-    private fun startStatusObserver() {
         lifecycleScope.launch {
             while (isActive) {
-                updatePermissionStatus()
+                updateAccessibilityUI()
                 delay(1000)
             }
         }
     }
 
-    @SuppressLint("BatteryLife")
-    private fun requestIgnoreBatteryOptimization() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                try {
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                    startActivity(intent)
-                }
-            } else {
-                Toast.makeText(this, "Đã tắt tối ưu hóa pin!", Toast.LENGTH_SHORT).show()
-            }
-        }
+    private fun copyToClipboard(label: String, text: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText(label, text)
+        clipboard.setPrimaryClip(clip)
     }
 }
