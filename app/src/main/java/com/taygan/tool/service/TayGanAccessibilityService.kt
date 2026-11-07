@@ -33,22 +33,30 @@ class TayGanAccessibilityService : AccessibilityService() {
         private val _serviceStatusFlow = MutableStateFlow(false)
         val serviceStatusFlow = _serviceStatusFlow.asStateFlow()
 
+        private val _currentStatusFlow = MutableStateFlow("Sẵn sàng")
+        val currentStatusFlow = _currentStatusFlow.asStateFlow()
+
         private val _logFlow = MutableStateFlow(
             "12:01:14.735 CLICK node ← đóng màn voucher\n12:01:14.682 ◀ Không thấy voucher"
         )
         val logFlow = _logFlow.asStateFlow()
+
+        fun isConnected(): Boolean = instance != null
+
+        fun postStatus(status: String) {
+            _currentStatusFlow.value = status
+            postLog(status)
+        }
 
         fun postLog(msg: String) {
             val df = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
             val timestamp = df.format(java.util.Date())
             val newLine = "$timestamp $msg"
             Log.d(TAG, newLine)
-            val current = _logFlow.value.lines().takeLast(5).toMutableList()
+            val current = _logFlow.value.lines().takeLast(6).toMutableList()
             current.add(newLine)
             _logFlow.value = current.joinToString("\n")
         }
-
-        fun isConnected(): Boolean = instance != null
 
         // Hunting configs
         var targetVoucherCode: String = ""
@@ -74,19 +82,18 @@ class TayGanAccessibilityService : AccessibilityService() {
     // Quản lý trạng thái săn voucher
     @Volatile private var hasSelectedVoucher = false
     @Volatile private var lastActionTime = 0L
+    @Volatile private var voucherScreenEnteredTime = 0L
     @Volatile private var consecutiveOrderClicks = 0
-    private var lastObservedWindowId = -1
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         _serviceStatusFlow.value = true
-        Log.d(TAG, "TayGanAccessibilityService connected - Native ID Engine Ready!")
+        Log.d(TAG, "TayGanAccessibilityService connected - Accurate Shopee Loop Active!")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!isHuntingActive || event == null) return
-        // Phản ứng tức thời khi có sự kiện giao diện thay đổi
         executeStep()
     }
 
@@ -103,7 +110,7 @@ class TayGanAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Kích hoạt quy trình săn mã tốc độ cao (svb-loop)
+     * Kích hoạt quy trình săn mã
      */
     fun triggerHunting(voucherCode: String, placeOrder: Boolean) {
         targetVoucherCode = voucherCode
@@ -111,23 +118,21 @@ class TayGanAccessibilityService : AccessibilityService() {
         isHuntingActive = true
         hasSelectedVoucher = false
         lastActionTime = 0L
+        voucherScreenEnteredTime = 0L
         consecutiveOrderClicks = 0
 
         vibrateAlert(120)
-        Log.d(TAG, "▶ START Săn Voucher: Code='$voucherCode', AutoOrder=$placeOrder")
+        postStatus("▶ Bắt đầu săn mã: $voucherCode")
 
-        // Khởi chạy vòng lặp ngầm tần số cao (35-45ms) hệt như svb-loop trong APK gốc
         workerJob?.cancel()
         workerJob = serviceScope.launch {
-            var loopCount = 0
             while (isActive && isHuntingActive) {
-                loopCount++
                 try {
                     executeStep()
                 } catch (e: Throwable) {
                     Log.e(TAG, "Lỗi vòng lặp worker: ${e.message}")
                 }
-                delay(35L + Random.nextLong(0, 15)) // Nhịp 35-50ms cực nhạy
+                delay(35L + Random.nextLong(0, 15))
             }
         }
     }
@@ -136,18 +141,18 @@ class TayGanAccessibilityService : AccessibilityService() {
         isHuntingActive = false
         hasSelectedVoucher = false
         consecutiveOrderClicks = 0
+        voucherScreenEnteredTime = 0L
         workerJob?.cancel()
-        Log.d(TAG, "■ Đã dừng quy trình săn mã.")
+        postStatus("■ Đã dừng quy trình săn mã")
     }
 
     /**
-     * Máy trạng thái (State Machine) thực thi theo chuẩn của APK gốc
+     * Máy trạng thái (State Machine) điều hướng cực kỳ chính xác
      */
     private fun executeStep() {
         val rootNode = rootInActiveWindow ?: return
         val currentPkg = rootNode.packageName?.toString() ?: ""
 
-        // Chỉ thao tác khi app Shopee đang ở mặt tiền (Foreground)
         if (currentPkg != SHOPEE_PKG && !currentPkg.contains("shopee")) {
             return
         }
@@ -156,56 +161,69 @@ class TayGanAccessibilityService : AccessibilityService() {
 
         // BƯỚC 1: XỬ LÝ POPUP LỖI SAU KHI ĐẶT HÀNG (Nếu có)
         if (dismissOrderPopup(rootNode)) {
-            postLog("Đã đóng popup lỗi để tiếp tục")
+            postStatus("Đã đóng popup lỗi đơn hàng")
             return
         }
 
         val isCheckout = isCheckoutScreen(rootNode)
         val isVoucherScreen = isVoucherSelectionScreen(rootNode)
 
-        // ================= BƯỚC 2: ĐANG Ở TRANG THANH TOÁN (CHECKOUT) =================
+        // ================= BƯỚC 2: KHI ĐANG Ở TRANG THANH TOÁN (CHECKOUT) =================
         if (isCheckout) {
+            voucherScreenEnteredTime = 0L // Reset thời gian màn voucher khi đã về Checkout
+
             if (!hasSelectedVoucher) {
-                // Chưa chọn voucher -> Bấm nút mở bảng Voucher (buttonCartPageUseVoucher)
-                if (now - lastActionTime > 200) {
+                // TUYỆT ĐỐI KHÔNG BẤM "Đặt hàng" KHI CHƯA CHỌN ĐƯỢC VOUCHER MỤC TIÊU!
+                if (now - lastActionTime > 300) {
                     lastActionTime = now
                     val entryNode = findVoucherEntryNode(rootNode)
                     if (entryNode != null) {
-                        postLog("▶ Bấm nút buttonCartPageUseVoucher mở popup...")
+                        postStatus("Vào mục Shopee Voucher...")
                         clickOrTap(entryNode, "Vào mục Voucher")
+                        voucherScreenEnteredTime = System.currentTimeMillis()
                     }
                 }
             } else {
-                // Đã chọn voucher xong -> Bấm nút "Đặt hàng" (buttonPlaceOrder)
+                // CHỈ BẤM ĐẶT HÀNG KHI ĐÃ ÁP VOUCHER THÀNH CÔNG!
                 if (autoPlaceOrder) {
                     val orderBtn = findOrderButtonNode(rootNode)
                     if (orderBtn != null) {
                         consecutiveOrderClicks++
-                        if (consecutiveOrderClicks % 5 == 1) {
-                            postLog("★ Bấm ĐẶT HÀNG qua buttonPlaceOrder (lần $consecutiveOrderClicks)!")
-                        }
+                        postStatus("★ Bấm ĐẶT HÀNG (lần $consecutiveOrderClicks)!")
                         clickOrTap(orderBtn, "Đặt hàng")
                         vibrateAlert(70)
+                        if (consecutiveOrderClicks >= 2) {
+                            stopHunting()
+                        }
                     }
                 }
             }
             return
         }
 
-        // ================= BƯỚC 3: ĐANG Ở BẢNG CHỌN VOUCHER (POPUP / SHEET) =================
+        // ================= BƯỚC 3: KHI ĐANG Ở BẢNG CHỌN VOUCHER (POPUP / SHEET) =================
         if (isVoucherScreen) {
-            // 3.1: Quét tìm Radio Button hoặc thẻ của Voucher mục tiêu
-            val targetRadio = findTargetVoucherRadio(rootNode, targetVoucherCode)
-            if (targetRadio != null) {
-                postLog("★ ĐÃ TÌM THẤY VOUCHER mục tiêu -> Chọn ngay!")
-                clickOrTap(targetRadio, "Chọn radio voucher")
+            if (voucherScreenEnteredTime == 0L) {
+                voucherScreenEnteredTime = now
+            }
+
+            // 3.1: Quét tìm ĐÚNG voucher mục tiêu
+            val targetMatch = findTargetVoucherRadio(rootNode, targetVoucherCode)
+            if (targetMatch != null) {
+                val (radioNode, isAlreadySelected) = targetMatch
+                if (isAlreadySelected) {
+                    postStatus("★ Voucher đã được chọn sẵn!")
+                } else {
+                    postStatus("★ ĐÃ TÌM THẤY VOUCHER -> Chọn ngay!")
+                    clickOrTap(radioNode, "Chọn radio voucher")
+                }
                 hasSelectedVoucher = true
                 vibrateAlert(100)
 
-                // 3.2: Bấm nút "Đồng ý" (btnOkVoucherSelectionSubmitSection)
+                // Bấm nút "Đồng ý" (btnOkVoucherSelectionSubmitSection)
                 val submitBtn = findVoucherSubmitNode(rootNode)
                 if (submitBtn != null) {
-                    postLog("✔ Bấm nút btnOkVoucherSelectionSubmitSection (Đồng ý)!")
+                    postStatus("✔ Bấm Đồng ý áp voucher!")
                     clickOrTap(submitBtn, "Đồng ý áp voucher")
                 } else {
                     clickFirstMatchingText(rootNode, listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận", "Áp dụng"))
@@ -213,7 +231,7 @@ class TayGanAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // 3.3: Nếu là mã ký tự tự do (VD: SVIP...), nhập vào ô EditText
+            // 3.2: Nếu là mã dạng text tự nhập (VD: SVIPDD...), thử điền vào ô
             if (isAlphanumericCode(targetVoucherCode)) {
                 val inputFilled = tryFillVoucherEditText(rootNode, targetVoucherCode)
                 if (inputFilled) {
@@ -221,46 +239,39 @@ class TayGanAccessibilityService : AccessibilityService() {
                     val submitBtn = findVoucherSubmitNode(rootNode)
                     if (submitBtn != null) {
                         clickOrTap(submitBtn, "Đồng ý")
-                    } else {
-                        clickFirstMatchingText(rootNode, listOf("Đồng ý", "ĐỒNG Ý", "Xác nhận"))
                     }
                     hasSelectedVoucher = true
                     return
                 }
             }
 
-            // 3.4: NẾU CHƯA THẤY MÃ (Chưa đến giờ hoặc Shopee chưa cập nhật):
-            // Thực hiện vòng lặp "Back -> Re-enter" để tải lại danh sách voucher tức thì!
-            if (now - lastActionTime > 250) {
+            // 3.3: NẾU CHƯA THẤY VOUCHER MỤC TIÊU:
+            // TUYỆT ĐỐI KHÔNG CHỌN BỪA VOUCHER KHÁC! TUYỆT ĐỐI KHÔNG BẤM ĐỒNG Ý!
+            // Đợi Shopee nạp dữ liệu xong (khoảng 1.2s - 1.5s), nếu vẫn không có -> BACK ra Thanh toán và vào lại để REFRESH!
+            val elapsed = now - voucherScreenEnteredTime
+            if (elapsed > 1300) {
                 lastActionTime = now
-                postLog("◀ Không thấy voucher -> Đóng màn voucher để vào lại")
+                postStatus("Chưa có mã → back ra, vào lại (${elapsed} ms)")
                 val backBtn = findVoucherBackNode(rootNode)
                 if (backBtn != null) {
                     clickOrTap(backBtn, "Đóng màn voucher")
                 } else {
                     performGlobalAction(GLOBAL_ACTION_BACK)
                 }
+                voucherScreenEnteredTime = 0L
+            } else {
+                postStatus("Chưa có mã → back ra, vào lại (${elapsed} ms)")
             }
             return
-        }
-
-        // BƯỚC 4: DỰ PHÒNG CHỐT ĐƠN
-        if (hasSelectedVoucher && autoPlaceOrder) {
-            val orderBtn = findOrderButtonNode(rootNode)
-            if (orderBtn != null) {
-                clickOrTap(orderBtn, "Đặt hàng fallback")
-            }
         }
     }
 
     /**
-     * Nhận diện màn hình Thanh toán (Checkout) theo ID hoặc Text
+     * Nhận diện màn hình Thanh toán (Checkout)
      */
     private fun isCheckoutScreen(rootNode: AccessibilityNodeInfo): Boolean {
-        // Ưu tiên 1: Có buttonPlaceOrder
         if (findLiveNodeByIdSuffix(rootNode, ID_PLACE_ORDER) != null) return true
 
-        // Ưu tiên 2: Có text "Đặt hàng" / "ĐẶT HÀNG"
         val hasOrderText = rootNode.findAccessibilityNodeInfosByText("Đặt hàng").isNotEmpty() ||
                 rootNode.findAccessibilityNodeInfosByText("ĐẶT HÀNG").isNotEmpty()
         val hasCheckoutTitle = rootNode.findAccessibilityNodeInfosByText("Thanh toán").isNotEmpty() ||
@@ -269,13 +280,10 @@ class TayGanAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Nhận diện Bảng Chọn Voucher (Popup / Dialog)
+     * Nhận diện Bảng Chọn Voucher
      */
     private fun isVoucherSelectionScreen(rootNode: AccessibilityNodeInfo): Boolean {
-        // Nếu có buttonPlaceOrder thì chắc chắn là trang Checkout, KHÔNG PHẢI voucher popup!
         if (findLiveNodeByIdSuffix(rootNode, ID_PLACE_ORDER) != null) return false
-
-        // Có btnOkVoucherSelectionSubmitSection
         if (findLiveNodeByIdSuffix(rootNode, ID_VOUCHER_SUBMIT) != null) return true
 
         val hasConfirmBtn = rootNode.findAccessibilityNodeInfosByText("Đồng ý").isNotEmpty() ||
@@ -288,9 +296,6 @@ class TayGanAccessibilityService : AccessibilityService() {
         return hasConfirmBtn || hasVoucherTitle
     }
 
-    /**
-     * Tìm Node mở Voucher trên trang Thanh toán (ID: buttonCartPageUseVoucher)
-     */
     private fun findVoucherEntryNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val byId = findLiveNodeByIdSuffix(root, ID_VOUCHER_ENTRY)
         if (byId != null) return findClickableAncestor(byId) ?: byId
@@ -311,9 +316,6 @@ class TayGanAccessibilityService : AccessibilityService() {
         return null
     }
 
-    /**
-     * Tìm nút Đặt Hàng (ID: buttonPlaceOrder)
-     */
     private fun findOrderButtonNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val byId = findLiveNodeByIdSuffix(root, ID_PLACE_ORDER)
         if (byId != null) return findClickableAncestor(byId) ?: byId
@@ -328,9 +330,6 @@ class TayGanAccessibilityService : AccessibilityService() {
         return null
     }
 
-    /**
-     * Tìm nút Đồng ý nộp voucher (ID: btnOkVoucherSelectionSubmitSection)
-     */
     private fun findVoucherSubmitNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val byId = findLiveNodeByIdSuffix(root, ID_VOUCHER_SUBMIT)
         if (byId != null) return findClickableAncestor(byId) ?: byId
@@ -345,9 +344,6 @@ class TayGanAccessibilityService : AccessibilityService() {
         return null
     }
 
-    /**
-     * Tìm nút Back/Đóng màn voucher (ID: buttonActionBarIcon)
-     */
     private fun findVoucherBackNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val byId = findLiveNodeByIdSuffix(root, ID_ACTION_BAR_BACK)
         if (byId != null) return findClickableAncestor(byId) ?: byId
@@ -358,15 +354,20 @@ class TayGanAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Quét tìm Radio Button voucher (ID: radioBtnVoucher_...)
+     * Quét tìm Radio Button hoặc thẻ của ĐÚNG voucher mục tiêu
+     * Trả về Pair(Node, isAlreadySelected) hoặc null nếu KHÔNG tìm thấy
      */
-    private fun findTargetVoucherRadio(root: AccessibilityNodeInfo, targetCode: String): AccessibilityNodeInfo? {
-        val radioNodes = mutableListOf<AccessibilityNodeInfo>()
+    private fun findTargetVoucherRadio(root: AccessibilityNodeInfo, targetCode: String): Pair<AccessibilityNodeInfo, Boolean>? {
+        if (targetCode.isBlank()) return null
+        val cleanTarget = targetCode.trim().lowercase()
+        val keywords = extractTargetKeywords(cleanTarget)
+
+        val candidateRadios = mutableListOf<AccessibilityNodeInfo>()
         fun findRadios(node: AccessibilityNodeInfo?) {
             if (node == null) return
-            val id = node.viewIdResourceName
-            if (id != null && id.contains(ID_VOUCHER_RADIO_PREFIX)) {
-                radioNodes.add(node)
+            val id = node.viewIdResourceName ?: ""
+            if (id.contains(ID_VOUCHER_RADIO_PREFIX)) {
+                candidateRadios.add(node)
             }
             for (i in 0 until node.childCount) {
                 findRadios(node.getChild(i))
@@ -374,56 +375,129 @@ class TayGanAccessibilityService : AccessibilityService() {
         }
         findRadios(root)
 
-        if (radioNodes.isNotEmpty()) {
-            if (targetCode.isNotBlank()) {
-                val clean = targetCode.trim().lowercase()
-                for (r in radioNodes) {
-                    val id = r.viewIdResourceName ?: ""
-                    if (id.lowercase().contains(clean)) return r
+        if (candidateRadios.isNotEmpty()) {
+            for (r in candidateRadios) {
+                val id = (r.viewIdResourceName ?: "").lowercase()
+                val isSelected = id.endsWith("_selected")
+
+                // Khớp theo ID nếu cleanTarget là số hoặc mã
+                if (id.contains(cleanTarget)) {
+                    return Pair(r, isSelected)
+                }
+
+                // Kiểm tra nội dung thẻ cha (Card chứa radio này)
+                var card: AccessibilityNodeInfo? = r.parent
+                var depth = 0
+                while (card != null && depth < 4) {
+                    val cardText = collectAllText(card).lowercase()
+                    if (keywords.isNotEmpty() && keywords.all { cardText.contains(it) }) {
+                        return Pair(r, isSelected)
+                    }
+                    card = card.parent
+                    depth++
                 }
             }
-
-            // Ưu tiên chọn radio chưa tick (_unselected)
-            for (r in radioNodes) {
-                val id = r.viewIdResourceName ?: ""
-                if (id.endsWith("_unselected")) return r
-            }
-            return radioNodes.firstOrNull()
         }
 
-        // Dự phòng tìm theo text nội dung thẻ voucher
-        return findMatchingVoucherByText(root, targetCode)
+        // Tìm theo text trực tiếp trên màn hình
+        val matchedTextNode = findNodeMatchingKeywords(root, keywords)
+        if (matchedTextNode != null) {
+            val radio = findRadioInSubtree(matchedTextNode)
+            if (radio != null) {
+                val isSelected = (radio.viewIdResourceName ?: "").endsWith("_selected")
+                return Pair(radio, isSelected)
+            }
+            val clickable = findClickableAncestor(matchedTextNode) ?: matchedTextNode
+            return Pair(clickable, false)
+        }
+
+        // TUYỆT ĐỐI KHÔNG CHỌN BỪA VOUCHER KHÁC NẾU KHÔNG TÌM THẤY!
+        return null
     }
 
-    /**
-     * Đóng popup lỗi nếu Shopee hiện thông báo sau khi bấm Đặt hàng (dismissOrderPopup)
-     */
+    private fun extractTargetKeywords(text: String): List<String> {
+        val tokens = mutableListOf<String>()
+        val lower = text.lowercase()
+
+        Regex("""\d+%""").findAll(lower).forEach { tokens.add(it.value) }
+        Regex("""\d+k""").findAll(lower).forEach { tokens.add(it.value) }
+
+        if (lower.contains("svip")) tokens.add("svip")
+        if (lower.contains("xtra")) tokens.add("xtra")
+
+        if (tokens.isEmpty()) {
+            lower.split(" ", "_", "-")
+                .map { it.trim() }
+                .filter { it.length >= 3 && it != "giảm" && it != "tối" && it != "voucher" && it != "đơn" }
+                .forEach { tokens.add(it) }
+        }
+        return tokens
+    }
+
+    private fun collectAllText(node: AccessibilityNodeInfo?): String {
+        if (node == null) return ""
+        val sb = StringBuilder()
+        node.text?.let { sb.append(it).append(" ") }
+        node.contentDescription?.let { sb.append(it).append(" ") }
+        for (i in 0 until node.childCount) {
+            sb.append(collectAllText(node.getChild(i)))
+        }
+        return sb.toString()
+    }
+
+    private fun findNodeMatchingKeywords(root: AccessibilityNodeInfo?, keywords: List<String>): AccessibilityNodeInfo? {
+        if (root == null || keywords.isEmpty()) return null
+        val allNodes = mutableListOf<AccessibilityNodeInfo>()
+        fun traverse(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            val t = n.text?.toString()?.lowercase() ?: ""
+            val d = n.contentDescription?.toString()?.lowercase() ?: ""
+            if (keywords.all { t.contains(it) || d.contains(it) }) {
+                allNodes.add(n)
+            }
+            for (i in 0 until n.childCount) traverse(n.getChild(i))
+        }
+        traverse(root)
+        return allNodes.firstOrNull()
+    }
+
+    private fun findRadioInSubtree(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val id = node.viewIdResourceName ?: ""
+        if (id.contains(ID_VOUCHER_RADIO_PREFIX)) return node
+        var parent = node.parent
+        var depth = 0
+        while (parent != null && depth < 3) {
+            for (i in 0 until parent.childCount) {
+                val child = parent.getChild(i)
+                val cId = child?.viewIdResourceName ?: ""
+                if (cId.contains(ID_VOUCHER_RADIO_PREFIX)) return child
+            }
+            parent = parent.parent
+            depth++
+        }
+        return null
+    }
+
     private fun dismissOrderPopup(root: AccessibilityNodeInfo): Boolean {
-        // 1. Kiểm tra nút "Xem Voucher" (Khi áp voucher không thành công)
         val seeVoucherNodes = root.findAccessibilityNodeInfosByText("Xem Voucher")
         if (seeVoucherNodes.isNotEmpty()) {
             val node = seeVoucherNodes[0]
             val clickable = findClickableAncestor(node) ?: node
             clickOrTap(clickable, "Xem Voucher (Popup lỗi)")
-            hasSelectedVoucher = false // Cho phép chọn lại
+            hasSelectedVoucher = false
             return true
         }
 
-        // 2. Kiểm tra nút buttonDefaultPositive (Đồng ý) trong popup Shopee
         val positiveBtn = findLiveNodeByIdSuffix(root, ID_ORDER_POPUP_POSITIVE)
         if (positiveBtn != null) {
             clickOrTap(positiveBtn, "Đồng ý (Popup lỗi)")
             return true
         }
-
         return false
     }
 
-    /**
-     * Bấm nhanh bằng performAction(ACTION_CLICK), nếu không ăn thì rơi về dispatchGesture vân tay
-     */
     private fun clickOrTap(node: AccessibilityNodeInfo, label: String = ""): Boolean {
-        // Thử thực hiện Action click gốc (độ trễ 0ms)
         if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
             Log.d(TAG, "performAction CLICK thành công trên node [$label]")
             return true
@@ -433,14 +507,9 @@ class TayGanAccessibilityService : AccessibilityService() {
             Log.d(TAG, "performAction CLICK thành công trên cha của [$label]")
             return true
         }
-
-        // Bắn cử chỉ cảm ứng mô phỏng người thật nếu Shopee chặn Accessibility Click
         return performHumanLikeClick(node)
     }
 
-    /**
-     * Cử chỉ chạm mô phỏng người thật với micro-jitter
-     */
     private fun performHumanLikeClick(node: AccessibilityNodeInfo): Boolean {
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
@@ -480,9 +549,6 @@ class TayGanAccessibilityService : AccessibilityService() {
         dispatchGesture(gesture, null, null)
     }
 
-    /**
-     * Tìm Node theo hậu tố ID (Suffix) trong cây giao diện
-     */
     private fun findLiveNodeByIdSuffix(node: AccessibilityNodeInfo?, suffix: String): AccessibilityNodeInfo? {
         if (node == null) return null
         val resName = node.viewIdResourceName
@@ -494,30 +560,6 @@ class TayGanAccessibilityService : AccessibilityService() {
             if (found != null) return found
         }
         return null
-    }
-
-    private fun findMatchingVoucherByText(rootNode: AccessibilityNodeInfo, targetCode: String): AccessibilityNodeInfo? {
-        if (targetCode.isBlank()) return null
-        val cleanTarget = targetCode.trim().lowercase()
-
-        val directMatches = rootNode.findAccessibilityNodeInfosByText(targetCode)
-        for (node in directMatches) {
-            return findClickableAncestor(node) ?: node
-        }
-
-        val allNodes = mutableListOf<AccessibilityNodeInfo>()
-        fun traverse(n: AccessibilityNodeInfo?) {
-            if (n == null) return
-            val t = n.text?.toString()?.lowercase() ?: ""
-            val d = n.contentDescription?.toString()?.lowercase() ?: ""
-            if (t.contains(cleanTarget) || d.contains(cleanTarget)) {
-                allNodes.add(n)
-            }
-            for (i in 0 until n.childCount) traverse(n.getChild(i))
-        }
-        traverse(rootNode)
-
-        return allNodes.firstOrNull()?.let { findClickableAncestor(it) ?: it }
     }
 
     private fun findClickableAncestor(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {

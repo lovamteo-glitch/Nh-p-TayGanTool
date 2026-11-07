@@ -196,7 +196,7 @@ class FloatingWindowService : Service() {
             y = 120
         }
 
-        // Layout params cho Bong bóng nổi thu nhỏ
+        // Layout params cho Thanh nổi thu nhỏ (Chuẩn như video tool gốc)
         bubbleParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -204,9 +204,9 @@ class FloatingWindowService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER
             x = 0
-            y = 120
+            y = -80
         }
 
         try {
@@ -393,6 +393,10 @@ class FloatingWindowService : Service() {
         bubble.setOnClickListener {
             expandToWindow()
         }
+
+        bubble.findViewById<View>(R.id.btnBubbleExpand)?.setOnClickListener {
+            expandToWindow()
+        }
     }
 
     private fun handleTouchDrag(event: MotionEvent, params: WindowManager.LayoutParams, targetView: View?): Boolean {
@@ -489,12 +493,14 @@ class FloatingWindowService : Service() {
 
                 TayGanAccessibilityService.instance?.triggerHunting(selectedVoucher.code, autoOrder)
                 tvStartText.text = "Đã bắn mã!"
+                minimizeToBubble()
             }
         }
 
         if (!huntByTime) {
             triggerCombo()
             Toast.makeText(this, "Đã kích hoạt săn tức thì!", Toast.LENGTH_SHORT).show()
+            minimizeToBubble()
             return
         }
 
@@ -545,26 +551,34 @@ class FloatingWindowService : Service() {
                 try {
                     val formattedTime = TimeHelper.getCurrentTimeFormatted()
                     val isConnected = TayGanAccessibilityService.isConnected()
+                    val isHunting = TayGanAccessibilityService.isHuntingActive
+                    val currentStatus = TayGanAccessibilityService.currentStatusFlow.value
 
                     expandedView?.findViewById<TextView>(R.id.tvRealtimeClock)?.text = formattedTime
                     val dot = expandedView?.findViewById<View>(R.id.dotStatus)
                     val statusText = expandedView?.findViewById<TextView>(R.id.tvStatusText)
 
-                    if (isConnected) {
-                        dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_connected)
-                        val apiStatus = if (sessionManager.isLoggedIn) " + API Sẵn sàng" else ""
-                        statusText?.text = "Service đã kết nối$apiStatus"
-                    } else {
-                        dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_disconnected)
-                        statusText?.text = "Service chưa kết nối (Chạm để bật)"
-                    }
-
                     minimizedBubbleView?.findViewById<TextView>(R.id.tvBubbleClock)?.text = formattedTime
                     val bubbleDot = minimizedBubbleView?.findViewById<View>(R.id.bubbleStatusDot)
-                    bubbleDot?.backgroundTintList = ContextCompat.getColorStateList(
-                        this@FloatingWindowService,
-                        if (isConnected) R.color.status_connected else R.color.status_disconnected
-                    )
+                    val bubbleStatus = minimizedBubbleView?.findViewById<TextView>(R.id.tvBubbleStatus)
+
+                    if (isHunting && currentStatus.isNotBlank()) {
+                        statusText?.text = currentStatus
+                        bubbleStatus?.text = currentStatus
+                        dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_connected)
+                        bubbleDot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_connected)
+                    } else if (isConnected) {
+                        dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_connected)
+                        bubbleDot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_connected)
+                        val apiStatus = if (sessionManager.isLoggedIn) " + API Sẵn sàng" else ""
+                        statusText?.text = "Service đã kết nối$apiStatus"
+                        bubbleStatus?.text = "Sẵn sàng săn mã"
+                    } else {
+                        dot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_disconnected)
+                        bubbleDot?.backgroundTintList = ContextCompat.getColorStateList(this@FloatingWindowService, R.color.status_disconnected)
+                        statusText?.text = "Service chưa kết nối (Chạm để bật)"
+                        bubbleStatus?.text = "Chưa bật Trợ năng"
+                    }
                 } catch (_: Exception) {}
 
                 delay(100)
